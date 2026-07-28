@@ -1,11 +1,22 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
+
+val serverIp = localProperties.getProperty("server.ip", "11.45.1.4")
+val serverPort = localProperties.getProperty("server.port", "3213")
+
 android {
     namespace = "com.raysonstudio.cctv_view"
-
     compileSdk = 36
 
     defaultConfig {
@@ -16,6 +27,10 @@ android {
         versionName = "1.0"
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -23,6 +38,17 @@ android {
 
     kotlinOptions {
         jvmTarget = "21"
+    }
+
+    buildTypes {
+        getByName("release") {
+            buildConfigField("String", "SERVER_IP", "\"${serverIp}\"")
+            buildConfigField("String", "SERVER_PORT", "\"${serverPort}\"")
+        }
+        getByName("debug") {
+            buildConfigField("String", "SERVER_IP", "\"${serverIp}\"")
+            buildConfigField("String", "SERVER_PORT", "\"${serverPort}\"")
+        }
     }
 }
 

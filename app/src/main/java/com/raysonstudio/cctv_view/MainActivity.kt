@@ -1,5 +1,6 @@
 package com.raysonstudio.cctv_view
 
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
@@ -40,6 +41,10 @@ class MainActivity : AppCompatActivity() {
     private var exitTime = 0L
     private var currentChannel = 1 // 1-based
 
+    private lateinit var firstLaunchPopup: View
+    private lateinit var sharedPreferences: SharedPreferences
+    private val FIRST_LAUNCH_KEY = "is_first_launch"
+
     // 用于控制沉浸式模式的新 API
     private lateinit var windowInsetsController: WindowInsetsControllerCompat
 
@@ -51,6 +56,16 @@ class MainActivity : AppCompatActivity() {
         windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
 
         setContentView(R.layout.activity_main)
+        firstLaunchPopup = findViewById(R.id.firstLaunchPopup)
+        sharedPreferences = getPreferences(MODE_PRIVATE)
+
+        val isFirstLaunch = sharedPreferences.getBoolean(FIRST_LAUNCH_KEY, true)
+        if (isFirstLaunch) {
+            // 如果是第一次，显示弹窗
+            firstLaunchPopup.visibility = View.VISIBLE
+            // 并记录下“已经不是第一次启动了”
+            sharedPreferences.edit().putBoolean(FIRST_LAUNCH_KEY, false).apply()
+        }
         splashLogo = findViewById(R.id.splashLogo)
         drawerLayout = findViewById(R.id.drawerLayout)
         val container: FrameLayout = findViewById(R.id.webViewContainer)
@@ -74,6 +89,10 @@ class MainActivity : AppCompatActivity() {
                     drawerLayout.closeDrawer(channelList)
                     return
                 }
+                if (firstLaunchPopup.visibility == View.VISIBLE) {
+                    firstLaunchPopup.visibility = View.GONE
+                    return
+                }
                 val now = System.currentTimeMillis()
                 if (now - exitTime < 2000) {
                     finish()
@@ -92,7 +111,7 @@ class MainActivity : AppCompatActivity() {
 
         // 创建一个请求，指向你的 Flask 服务器 API
         val request = Request.Builder()
-            .url("http://210.16.170.179:3213/api/default_channel")
+            .url("http://${BuildConfig.SERVER_IP}:${BuildConfig.SERVER_PORT}/api/default_channel")
             .build()
 
         // 在新线程中执行网络请求，不能在主线程进行网络操作

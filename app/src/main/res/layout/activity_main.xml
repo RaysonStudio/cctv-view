@@ -59,4 +59,23 @@
         android:focusable="true"
         android:focusableInTouchMode="true"
         tools:ignore="VisualLintBounds" />
+
+    <LinearLayout
+        android:id="@+id/firstLaunchPopup"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#CC000000"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+    <ImageView
+        android:layout_width="300dp"
+        android:layout_height="wrap_content"
+        android:src="@drawable/note"
+        android:adjustViewBounds="true"
+        android:contentDescription="@null"/>
+
+    </LinearLayout>
+
 </androidx.drawerlayout.widget.DrawerLayout>
