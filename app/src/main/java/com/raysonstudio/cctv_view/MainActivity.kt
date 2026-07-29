@@ -120,10 +120,13 @@ class MainActivity : AppCompatActivity() {
                 // 执行请求并获取响应
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
+                        var defaultChannelFromServer = 1
                         // 解析返回的 JSON 数据
                         val jsonData = response.body?.string()
-                        val jsonObject = JSONObject(jsonData)
-                        val defaultChannelFromServer = jsonObject.getInt("default_channel")
+                        if (jsonData != null) {
+                            val jsonObject = JSONObject(jsonData)
+                            defaultChannelFromServer = jsonObject.getInt("default_channel")
+                        }
 
                         // 回到主线程更新 UI (加载频道)
                         runOnUiThread {

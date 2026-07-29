@@ -40,10 +40,30 @@ android {
         jvmTarget = "21"
     }
 
+    signingConfigs {
+        create("release") {
+
+            storeFile =
+                file(localProperties.getProperty("KEYSTORE_FILE"))
+
+            storePassword =
+                localProperties.getProperty("KEYSTORE_PASSWORD")
+
+            keyAlias =
+                localProperties.getProperty("KEY_ALIAS")
+
+            keyPassword =
+                localProperties.getProperty("KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         getByName("release") {
             buildConfigField("String", "SERVER_IP", "\"${serverIp}\"")
             buildConfigField("String", "SERVER_PORT", "\"${serverPort}\"")
+            signingConfig =
+                signingConfigs.getByName("release")
+            isMinifyEnabled = false
         }
         getByName("debug") {
             buildConfigField("String", "SERVER_IP", "\"${serverIp}\"")
