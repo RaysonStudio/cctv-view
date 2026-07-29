@@ -65,10 +65,6 @@ android {
                 signingConfigs.getByName("release")
             isMinifyEnabled = false
         }
-        getByName("debug") {
-            buildConfigField("String", "SERVER_IP", "\"${serverIp}\"")
-            buildConfigField("String", "SERVER_PORT", "\"${serverPort}\"")
-        }
     }
 }
 
