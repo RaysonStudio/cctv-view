@@ -9,11 +9,14 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.net.HttpURLConnection
+import java.net.URL
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.FrameLayout
@@ -44,6 +47,40 @@ class MainActivity : AppCompatActivity() {
     private var waitVideoStarted = false // 是否已启动轮询（onPageStarted延迟 + onPageFinished 防重复）
 
     private lateinit var windowInsetsController: WindowInsetsControllerCompat
+
+    // 在 HTML <head> 中同步注入的全屏 CSS（避免 JS 异步注入与页面渲染竞争）
+    private val earlyCss: String = buildString {
+        // 1. 页面根：全屏固定，黑色背景
+        append("#app{position:fixed!important;left:0!important;top:0!important;")
+        append("width:100%!important;height:100%!important;z-index:999999!important;")
+        append("margin:0!important;padding:0!important;background:#000!important;")
+        append("overflow:hidden!important;max-width:none!important;min-width:0!important}\n")
+        append("html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;width:100%!important;height:100%!important}\n")
+        // 2. 播放器祖先链：全部填满父容器
+        append(".tv-home,.tv-home-list,.tv,.tv-main,.tv-main-con,.tv-main-con-l,.tv-main-con-l-vid")
+        append("{width:100%!important;height:100%!important;margin:0!important;padding:0!important;")
+        append("overflow:hidden!important;background:#000!important;display:block!important;")
+        append("max-width:none!important;min-width:0!important;position:static!important;flex:none!important}\n")
+        // 2b. 路径上无class的中间div也要填满
+        append(".tv-main-con-l-vid>div,.tv-home-list>div")
+        append("{width:100%!important;height:100%!important;margin:0!important;padding:0!important;")
+        append("overflow:hidden!important;background:#000!important;display:block!important;")
+        append("max-width:none!important;min-width:0!important;flex:none!important}\n")
+        // 3. 视频容器+视频：绝对填满
+        append("[id^='vodbox']{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;overflow:hidden!important;background:#000!important;display:block!important;z-index:1!important}\n")
+        append(".video-con{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;z-index:2!important}\n")
+        append("video.video-js{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;background:#000!important;object-fit:contain!important;z-index:3!important;opacity:1!important;visibility:visible!important;display:block!important}\n")
+        // 4. 隐藏非播放器子区域
+        append(".tv-main-con-r,.tv-main-con-r-tab,.tv-main-con-r-list,.own-toast,.y-full-control,.y-full,.y-full-bg,.con.poster,.loading,[class*='control-outside'],.progress-bar,.progress-btn-wrapper,.voice,.bei,.pip,.videoFull,.full,.volume-muted-tip-container,.video-status-tip,img,picture,figure,svg,canvas,iframe,audio,object,embed,source,track,footer,header,nav,[class*='advert'],[class*='promotion'],[class*='banner']{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;z-index:-999!important}\n")
+        // 5. body直接子元素中除#app外：隐藏
+        append("body>*:not(#app){display:none!important}\n")
+        // 6. 路径兄弟隐藏
+        append("#app>div:not(.comPadding):not([class*='own-toast']){display:none!important}\n")
+        append(".comPadding>div:not(.tv-home){display:none!important}\n")
+        append(".tv-home>div:not(.tv-home-list){display:none!important}\n")
+        append(".tv-main-con>div:not(.tv-main-con-l):not([class*='l-vid']){display:none!important}\n")
+        append(".tv-main-con-l>div:not(.tv-main-con-l-vid){display:none!important}\n")
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -164,8 +201,10 @@ class MainActivity : AppCompatActivity() {
             ): android.webkit.WebResourceResponse? {
                 val url = request?.url?.toString() ?: return null
 
-                // 主文档：放行
-                if (request.isForMainFrame) return null
+                // 主文档：同步拦截央视频 TV 首页，在 <head> 中注入全屏 CSS
+                if (request.isForMainFrame && url.contains("yangshipin.cn") && url.contains("/tv/home")) {
+                    return interceptMainFrame(request, url)
+                }
 
                 // blob: / data:：放行（视频内部流）
                 if (url.startsWith("blob:") || url.startsWith("data:")) return null
@@ -229,46 +268,14 @@ class MainActivity : AppCompatActivity() {
                 super.onPageStarted(view, url, favicon)
                 setViewsVisibility(View.VISIBLE, loadingProgress, splashLogo)
                 // ============================================================
-                // 关键：在页面渲染前（onPageStarted阶段）注入一套CSS规则，
+                // 关键：在 shouldInterceptRequest 中已同步把全屏 CSS 注入到 HTML <head>，
                 // 从渲染管线源头就隐藏非播放器元素 + 预全屏播放器容器。
-                // 这样当video.js建立解码Surface时，尺寸/位置就已经是最终全屏值，
-                // 避免视频已开始播放后再改变布局造成解码器Surface失效（=先声后画+长黑屏）
+                // 这里保留一个带守卫的 JS 兜底，以防拦截失败或非常规入口。
+                // 这样当 video.js 建立解码 Surface 时，尺寸/位置就已经是最终全屏值，
+                // 避免视频已开始播放后再改变布局造成解码器 Surface 失效（=先声后画+长黑屏）
                 //
-                // 只做display:none/visibility/opacity，不做任何DOM remove，不破坏内部引用。
+                // 只做 display:none/visibility/opacity，不做任何 DOM remove，不破坏内部引用。
                 // ============================================================
-                val earlyCss = buildString {
-                    // 1. 页面根：全屏固定，黑色背景（用100%代替100vw/100vh，WebView兼容性更好）
-                    append("#app{position:fixed!important;left:0!important;top:0!important;")
-                    append("width:100%!important;height:100%!important;z-index:999999!important;")
-                    append("margin:0!important;padding:0!important;background:#000!important;")
-                    append("overflow:hidden!important;max-width:none!important;min-width:0!important}\n")
-                    append("html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;width:100%!important;height:100%!important}\n")
-                    // 2. 播放器祖先链：全部填满父容器
-                    append(".tv-home,.tv-home-list,.tv,.tv-main,.tv-main-con,.tv-main-con-l,.tv-main-con-l-vid")
-                    append("{width:100%!important;height:100%!important;margin:0!important;padding:0!important;")
-                    append("overflow:hidden!important;background:#000!important;display:block!important;")
-                    append("max-width:none!important;min-width:0!important;position:static!important;flex:none!important}\n")
-                    // 2b. 路径上无class的中间div也要填满（关键！否则尺寸断裂）
-                    append(".tv-main-con-l-vid>div,.tv-home-list>div")
-                    append("{width:100%!important;height:100%!important;margin:0!important;padding:0!important;")
-                    append("overflow:hidden!important;background:#000!important;display:block!important;")
-                    append("max-width:none!important;min-width:0!important;flex:none!important}\n")
-                    // 3. 视频容器+视频：绝对填满
-                    append("[id^='vodbox']{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;overflow:hidden!important;background:#000!important;display:block!important;z-index:1!important}\n")
-                    append(".video-con{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;z-index:2!important}\n")
-                    append("video.video-js{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;background:#000!important;object-fit:contain!important;z-index:3!important;opacity:1!important;visibility:visible!important;display:block!important}\n")
-                    // 4. 隐藏非播放器子区域（不隐藏.play/.play2，保留JS click能力）
-                    append(".tv-main-con-r,.tv-main-con-r-tab,.tv-main-con-r-list,.own-toast,.y-full-control,.y-full,.y-full-bg,.con.poster,.loading,[class*='control-outside'],.progress-bar,.progress-btn-wrapper,.voice,.bei,.pip,.videoFull,.full,.volume-muted-tip-container,.video-status-tip,img,picture,figure,svg,canvas,iframe,audio,object,embed,source,track,footer,header,nav,[class*='advert'],[class*='promotion'],[class*='banner']{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;z-index:-999!important}\n")
-                    // 5. body直接子元素中除#app外：隐藏
-                    append("body>*:not(#app){display:none!important}\n")
-                    // 6. 路径兄弟隐藏
-                    append("#app>div:not(.comPadding):not([class*='own-toast']){display:none!important}\n")
-                    append(".comPadding>div:not(.tv-home){display:none!important}\n")
-                    append(".tv-home>div:not(.tv-home-list){display:none!important}\n")
-                    append(".tv-main-con>div:not(.tv-main-con-l):not([class*='l-vid']){display:none!important}\n")
-                    append(".tv-main-con-l>div:not(.tv-main-con-l-vid){display:none!important}\n")
-                }
-                // 用 JSON.stringify 安全注入CSS（避免Kotlin模板展开导致JS语法错误）
                 val cssJs = earlyCss.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
                 webView.evaluateJavascript(
                     """
@@ -281,13 +288,16 @@ class MainActivity : AppCompatActivity() {
                         window.__cctvStuckStart=null;
                         window.__cctvVideoError=null;
                         window.__cctvStartTs=Date.now();
-                        try{
-                            var s=document.createElement('style');
-                            s.id='cctv-early-css';
-                            s.textContent='$cssJs';
-                            if(document.head){document.head.appendChild(s);}
-                            else{document.documentElement.appendChild(s);}
-                        }catch(e){}
+                        // 兜底：若同步 HTML 注入未生效，则通过 JS 补充 CSS
+                        if(!document.getElementById('cctv-early-css')){
+                            try{
+                                var s=document.createElement('style');
+                                s.id='cctv-early-css';
+                                s.textContent='$cssJs';
+                                if(document.head){document.head.appendChild(s);}
+                                else{document.documentElement.appendChild(s);}
+                            }catch(e){}
+                        }
 
                         // ===== 安全删除冗余元素（只删除不在视频播放路径上的节点） =====
                         window.__cctvCleaning=false;
@@ -390,6 +400,89 @@ class MainActivity : AppCompatActivity() {
     private fun setViewsVisibility(visibility: Int, vararg views: View) {
         for (view in views) {
             view.visibility = visibility
+        }
+    }
+
+    private fun injectCssIntoHtml(html: String, css: String): String {
+        val styleBlock = "<style id=\"cctv-early-css\">$css</style>"
+        val headClose = html.indexOf("</head>", ignoreCase = true)
+        return if (headClose >= 0) {
+            html.substring(0, headClose) + styleBlock + html.substring(headClose)
+        } else {
+            val htmlClose = html.indexOf("</html>", ignoreCase = true)
+            if (htmlClose >= 0) {
+                html.substring(0, htmlClose) + styleBlock + html.substring(htmlClose)
+            } else {
+                styleBlock + html
+            }
+        }
+    }
+
+    private fun interceptMainFrame(request: WebResourceRequest, url: String): android.webkit.WebResourceResponse? {
+        if (!request.method.equals("GET", ignoreCase = true)) return null
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = URL(url).openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            connection.instanceFollowRedirects = true
+            connection.doInput = true
+
+            // 复制原请求头，但跳过 WebView 自己处理的 Host/编码头
+            request.requestHeaders?.forEach { (key, value) ->
+                if (key.equals("Host", ignoreCase = true) ||
+                    key.equals("Accept-Encoding", ignoreCase = true)) return@forEach
+                connection.setRequestProperty(key, value)
+            }
+            connection.setRequestProperty("User-Agent", webView.settings.userAgentString)
+
+            // 同步 WebView CookieManager 中的 cookie
+            val cookie = CookieManager.getInstance().getCookie(url)
+            if (!cookie.isNullOrEmpty()) {
+                connection.setRequestProperty("Cookie", cookie)
+            }
+
+            connection.connect()
+
+            // 把响应 Set-Cookie 写回 WebView CookieManager
+            var i = 0
+            while (true) {
+                val key = connection.getHeaderFieldKey(i) ?: break
+                if (key.equals("Set-Cookie", ignoreCase = true)) {
+                    connection.getHeaderField(i)?.let { CookieManager.getInstance().setCookie(url, it) }
+                }
+                i++
+            }
+
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                Log.w("CCTV_WEB", "Intercept main frame got non-2xx: $responseCode")
+                return null
+            }
+
+            val contentType = connection.contentType ?: "text/html; charset=utf-8"
+            val charset = contentType.substringAfter("charset=", "utf-8")
+                .trim(' ', '\"', '\'')
+                .ifEmpty { "utf-8" }
+
+            val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val modifiedHtml = injectCssIntoHtml(html, earlyCss)
+            val bytes = modifiedHtml.toByteArray(Charsets.UTF_8)
+
+            android.webkit.WebResourceResponse(
+                contentType.substringBefore(";"),
+                charset,
+                responseCode,
+                connection.responseMessage ?: "OK",
+                emptyMap(),
+                java.io.ByteArrayInputStream(bytes)
+            )
+        } catch (e: Exception) {
+            Log.e("CCTV_WEB", "Main frame intercept failed: ${e.message}")
+            null
+        } finally {
+            connection?.disconnect()
         }
     }
 
