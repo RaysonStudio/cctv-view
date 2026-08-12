@@ -320,35 +320,130 @@ class MainActivity : AppCompatActivity() {
                         window.cctvClean=function(){
                             if(window.__cctvCleaning) return;
                             window.__cctvCleaning=true;
+                            var totalRemoved=0;
+                            var totalHidden=0;
                             try{
                                 var v=document.querySelector('video.video-js');
                                 var selectors=[
+                                    // 左右侧栏目
                                     '.tv-zhan','.tv-zhan-shadow','.tv-zhan-con','.tv-zhan-title','.tv-zhan-kai','.tv-zhan-list',
                                     '.tv-main-con-r','.tv-main-con-r-tab','.tv-main-con-r-list',
+                                    // 播放器控制/提示
                                     '.own-toast','.y-full-control','.y-full','.y-full-bg','.con.poster','.loading',
                                     '[class*="control-outside"]','.progress-bar','.progress-btn-wrapper','.voice','.bei','.pip',
                                     '.videoFull','.full','.volume-muted-tip-container','.video-status-tip',
-                                    '[class*="advert"]','[class*="promotion"]','[class*="banner"]',
-                                    'header','footer','nav'
+                                    // 广告/推广
+                                    '[class*="advert"]','[class*="promotion"]','[class*="banner"]','[class*="ad-"]',
+                                    // 导航/页眉页脚
+                                    'header','footer','nav','.header','.footer','.nav','.navbar',
+                                    // 央视频常见其他冗余
+                                    '.ysp-header','.ysp-footer','.ysp-nav','.ysp-menu','.ysp-drawer',
+                                    '.tv-home-title','.tv-home-header','.channel-list','.program-list',
+                                    '.live-list','.recommend','.related','.comment','.chat','.danmu',
+                                    // 弹窗浮层
+                                    '.dialog','.modal','.popup','.mask','.overlay','.toast'
                                 ];
                                 for(var i=0;i<selectors.length;i++){
                                     try{
                                         var nodes=document.querySelectorAll(selectors[i]);
+                                        if(nodes.length>0) console.log('[CCTV_CLEAN] selector='+selectors[i]+' matched='+nodes.length);
                                         for(var j=0;j<nodes.length;j++){
                                             var node=nodes[j];
                                             if(!node.parentNode) continue;
-                                            if(v && (node.contains(v) || v.contains(node))) continue;
-                                            node.parentNode.removeChild(node);
+                                            // 安全：不删除包含 video 或被 video 包含的节点
+                                            if(v && (node.contains(v) || v.contains(node))){
+                                                continue;
+                                            }
+                                            // 先隐藏再删除，双保险防止闪现
+                                            try{
+                                                node.style.setProperty('display','none','important');
+                                                node.style.setProperty('visibility','hidden','important');
+                                                node.style.setProperty('opacity','0','important');
+                                                node.style.setProperty('pointer-events','none','important');
+                                                node.parentNode.removeChild(node);
+                                                totalRemoved++;
+                                            }catch(e){
+                                                totalHidden++;
+                                            }
                                         }
-                                    }catch(e){}
+                                    }catch(e){
+                                        console.log('[CCTV_CLEAN] selector='+selectors[i]+' error='+e);
+                                    }
                                 }
-                            }catch(e){}
+
+                                // 兜底1：删除 #app 下不在视频路径上的兄弟分支
+                                if(v){
+                                    var app=document.getElementById('app');
+                                    if(app){
+                                        var appKids=Array.from(app.children);
+                                        for(var ak=0;ak<appKids.length;ak++){
+                                            var kid=appKids[ak];
+                                            var onPath=false;
+                                            var vp=kid;
+                                            while(vp){
+                                                if(vp===v){ onPath=true; break; }
+                                                vp=vp.parentElement;
+                                            }
+                                            if(!onPath){
+                                                // 也可能是 video 的祖先容器
+                                                var anc=v.parentElement;
+                                                while(anc){
+                                                    if(anc===kid){ onPath=true; break; }
+                                                    anc=anc.parentElement;
+                                                }
+                                            }
+                                            if(!onPath && kid!==v){
+                                                try{
+                                                    kid.style.setProperty('display','none','important');
+                                                    kid.parentNode.removeChild(kid);
+                                                    totalRemoved++;
+                                                }catch(e){ totalHidden++; }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 兜底2：body 下除 #app / script / style 外全部删除
+                                var bodyKids=Array.from(document.body.children);
+                                for(var bk=0;bk<bodyKids.length;bk++){
+                                    var bc=bodyKids[bk];
+                                    var tag=bc.tagName.toLowerCase();
+                                    if(bc.id!=='app' && tag!=='script' && tag!=='style'){
+                                        try{
+                                            bc.style.setProperty('display','none','important');
+                                            bc.parentNode.removeChild(bc);
+                                            totalRemoved++;
+                                        }catch(e){ totalHidden++; }
+                                    }
+                                }
+
+                                // 兜底3：删除页面中所有图片（央视频不需要显示网页图片）
+                                var imgs=document.querySelectorAll('img, picture, figure, svg, canvas');
+                                for(var ii=0;ii<imgs.length;ii++){
+                                    var img=imgs[ii];
+                                    if(v && (img.contains(v) || v.contains(img))) continue;
+                                    try{
+                                        img.style.setProperty('display','none','important');
+                                        img.parentNode.removeChild(img);
+                                        totalRemoved++;
+                                    }catch(e){ totalHidden++; }
+                                }
+                            }catch(e){
+                                console.log('[CCTV_CLEAN] top error='+e);
+                            }
+                            console.log('[CCTV_CLEAN] done videoFound='+(v?1:0)+' removed='+totalRemoved+' hidden='+totalHidden);
                             window.__cctvCleaning=false;
                         };
                         window.cctvClean();
+                        // 多次延迟重清，应对央视频 SPA 动态插入
+                        setTimeout(function(){ window.cctvClean(); }, 500);
+                        setTimeout(function(){ window.cctvClean(); }, 1500);
+                        setTimeout(function(){ window.cctvClean(); }, 3500);
+                        setTimeout(function(){ window.cctvClean(); }, 7000);
                         if(!window.cctvObserver){
                             window.cctvObserver=new MutationObserver(function(mutations){
-                                window.cctvClean();
+                                clearTimeout(window.__cctvCleanTimer);
+                                window.__cctvCleanTimer=setTimeout(function(){ window.cctvClean(); }, 600);
                             });
                             window.cctvObserver.observe(document.documentElement,{childList:true,subtree:true});
                         }
@@ -396,6 +491,8 @@ class MainActivity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 setViewsVisibility(View.GONE, loadingProgress, splashLogo)
                 Log.d("CCTV_LIFECYCLE", "onPageFinished url=$url fullscreenDone=$fullscreenDone waitVideoStarted=$waitVideoStarted")
+                // 页面加载完成后再清一次，捕获 SPA 延迟渲染的节点
+                webView.evaluateJavascript("(function(){try{window.cctvClean && window.cctvClean();}catch(e){}})();", null)
                 // onPageFinished时如果轮询还没启动，立即启动（否则等待已有轮询继续）
                 if (!fullscreenDone && !waitVideoStarted) {
                     // 如果onPageStarted的延迟1秒还没到，这里立即启动轮询
@@ -406,6 +503,8 @@ class MainActivity : AppCompatActivity() {
             override fun onPageCommitVisible(view: WebView?, url: String?) {
                 super.onPageCommitVisible(view, url)
                 Log.d("CCTV_LIFECYCLE", "onPageCommitVisible url=$url")
+                // 页面即将可见时再清一次
+                webView.evaluateJavascript("(function(){try{window.cctvClean && window.cctvClean();}catch(e){}})();", null)
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
@@ -586,6 +685,7 @@ class MainActivity : AppCompatActivity() {
                 webView.evaluateJavascript(
                     """
                     (function(){
+                        try{ if(window.cctvClean) window.cctvClean(); }catch(e){}
                         function setStage(s){ try{ document.title="CCTV|"+s; }catch(e){} }
 
                         // ===== 总超时（从页面开始加载计时） =====
