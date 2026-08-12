@@ -1,6 +1,10 @@
 # CCTV_View
+
 (package name: com.raysonstudio.cctv_view)
+
 (program Chinese name: 央视网)
+
+## WARNING: SOME INFORMATION WAS OLD.
 
 ## Short Introduction
 
