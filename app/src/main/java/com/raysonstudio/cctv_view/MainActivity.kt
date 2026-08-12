@@ -47,6 +47,7 @@ class MainActivity : AppCompatActivity() {
     private var waitVideoStarted = false // 是否已启动轮询（onPageStarted延迟 + onPageFinished 防重复）
 
     private lateinit var windowInsetsController: WindowInsetsControllerCompat
+    private var userAgent: String = ""
 
     // 在 HTML <head> 中同步注入的全屏 CSS（避免 JS 异步注入与页面渲染竞争）
     private val earlyCss: String = buildString {
@@ -140,6 +141,7 @@ class MainActivity : AppCompatActivity() {
         // 移动端页面用 Nuxt 框架，没有 video.video-js 元素，且 WASM 加载方式不同会导致 MIME type 错误
         // 桌面页面下所有频道（含卫视）返回的 HLS 流均为 H.264 编码，Android WebView 可正常解码
         settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        userAgent = settings.userAgentString
         settings.loadsImagesAutomatically = false
         settings.blockNetworkImage = false
         settings.allowFileAccess = false
@@ -202,8 +204,13 @@ class MainActivity : AppCompatActivity() {
                 val url = request?.url?.toString() ?: return null
 
                 // 主文档：同步拦截央视频 TV 首页，在 <head> 中注入全屏 CSS
-                if (request.isForMainFrame && url.contains("yangshipin.cn") && url.contains("/tv/home")) {
-                    return interceptMainFrame(request, url)
+                if (request.isForMainFrame) {
+                    if (url.contains("yangshipin.cn") && url.contains("/tv/home")) {
+                        Log.d("CCTV_INTERCEPT", "HIT mainFrame url=$url")
+                        return interceptMainFrame(request, url)
+                    } else {
+                        Log.d("CCTV_INTERCEPT", "MISS mainFrame url=$url")
+                    }
                 }
 
                 // blob: / data:：放行（视频内部流）
@@ -267,6 +274,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 setViewsVisibility(View.VISIBLE, loadingProgress, splashLogo)
+                Log.d("CCTV_LIFECYCLE", "onPageStarted url=$url")
                 // ============================================================
                 // 关键：在 shouldInterceptRequest 中已同步把全屏 CSS 注入到 HTML <head>，
                 // 从渲染管线源头就隐藏非播放器元素 + 预全屏播放器容器。
@@ -280,6 +288,7 @@ class MainActivity : AppCompatActivity() {
                 webView.evaluateJavascript(
                     """
                     (function(){
+                        console.log('[CCTV_JS] onPageStarted');
                         try{ if(window.cctvObserver){ window.cctvObserver.disconnect(); window.cctvObserver=null; } }catch(e){}
                         try{ if(window.cctvClean){ window.cctvClean(); } }catch(e){}
                         window.__cctvInited=false;
@@ -289,15 +298,22 @@ class MainActivity : AppCompatActivity() {
                         window.__cctvVideoError=null;
                         window.__cctvStartTs=Date.now();
                         // 兜底：若同步 HTML 注入未生效，则通过 JS 补充 CSS
-                        if(!document.getElementById('cctv-early-css')){
+                        var hasStyle=!!document.getElementById('cctv-early-css');
+                        console.log('[CCTV_JS] earlyCss exists='+hasStyle);
+                        if(!hasStyle){
                             try{
                                 var s=document.createElement('style');
                                 s.id='cctv-early-css';
                                 s.textContent='$cssJs';
                                 if(document.head){document.head.appendChild(s);}
                                 else{document.documentElement.appendChild(s);}
-                            }catch(e){}
+                                console.log('[CCTV_JS] fallback CSS injected');
+                            }catch(e){
+                                console.log('[CCTV_JS] fallback CSS inject error: '+e);
+                            }
                         }
+                        var v=document.querySelector('video.video-js');
+                        console.log('[CCTV_JS] video found='+(v?1:0)+' size='+(v?v.videoWidth+'x'+v.videoHeight:'none')+' readyState='+(v?v.readyState:-1));
 
                         // ===== 安全删除冗余元素（只删除不在视频播放路径上的节点） =====
                         window.__cctvCleaning=false;
@@ -379,12 +395,17 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 setViewsVisibility(View.GONE, loadingProgress, splashLogo)
-                Log.d("CCTV_WEB", "加载完成: $url")
+                Log.d("CCTV_LIFECYCLE", "onPageFinished url=$url fullscreenDone=$fullscreenDone waitVideoStarted=$waitVideoStarted")
                 // onPageFinished时如果轮询还没启动，立即启动（否则等待已有轮询继续）
                 if (!fullscreenDone && !waitVideoStarted) {
                     // 如果onPageStarted的延迟1秒还没到，这里立即启动轮询
                     //startWaitVideo()
                 }
+            }
+
+            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                super.onPageCommitVisible(view, url)
+                Log.d("CCTV_LIFECYCLE", "onPageCommitVisible url=$url")
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
@@ -419,7 +440,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun interceptMainFrame(request: WebResourceRequest, url: String): android.webkit.WebResourceResponse? {
-        if (!request.method.equals("GET", ignoreCase = true)) return null
+        if (!request.method.equals("GET", ignoreCase = true)) {
+            Log.d("CCTV_INTERCEPT", "SKIP non-GET method=${request.method} url=$url")
+            return null
+        }
+        Log.d("CCTV_INTERCEPT", "START fetch url=$url")
         var connection: HttpURLConnection? = null
         return try {
             connection = URL(url).openConnection() as HttpURLConnection
@@ -435,7 +460,7 @@ class MainActivity : AppCompatActivity() {
                     key.equals("Accept-Encoding", ignoreCase = true)) return@forEach
                 connection.setRequestProperty(key, value)
             }
-            connection.setRequestProperty("User-Agent", webView.settings.userAgentString)
+            connection.setRequestProperty("User-Agent", userAgent)
 
             // 同步 WebView CookieManager 中的 cookie
             val cookie = CookieManager.getInstance().getCookie(url)
@@ -457,7 +482,7 @@ class MainActivity : AppCompatActivity() {
 
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
-                Log.w("CCTV_WEB", "Intercept main frame got non-2xx: $responseCode")
+                Log.w("CCTV_INTERCEPT", "FAIL non-2xx code=$responseCode url=$url")
                 return null
             }
 
@@ -469,6 +494,7 @@ class MainActivity : AppCompatActivity() {
             val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val modifiedHtml = injectCssIntoHtml(html, earlyCss)
             val bytes = modifiedHtml.toByteArray(Charsets.UTF_8)
+            Log.d("CCTV_INTERCEPT", "OK code=$responseCode html=${html.length} modified=${modifiedHtml.length} cssLen=${earlyCss.length} url=$url")
 
             android.webkit.WebResourceResponse(
                 contentType.substringBefore(";"),
@@ -479,7 +505,7 @@ class MainActivity : AppCompatActivity() {
                 java.io.ByteArrayInputStream(bytes)
             )
         } catch (e: Exception) {
-            Log.e("CCTV_WEB", "Main frame intercept failed: ${e.message}")
+            Log.e("CCTV_INTERCEPT", "EXCEPTION ${e.javaClass.simpleName}: ${e.message} url=$url")
             null
         } finally {
             connection?.disconnect()
