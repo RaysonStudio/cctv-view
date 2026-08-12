@@ -12,9 +12,6 @@ if (localPropertiesFile.exists()) {
     localProperties.load(FileInputStream(localPropertiesFile))
 }
 
-val serverIp = localProperties.getProperty("server.ip", "11.45.1.4")
-val serverPort = localProperties.getProperty("server.port", "3213")
-
 android {
     namespace = "com.raysonstudio.cctv_view"
     compileSdk = 36
@@ -68,8 +65,6 @@ android {
 
     buildTypes {
         getByName("release") {
-            buildConfigField("String", "SERVER_IP", "\"${serverIp}\"")
-            buildConfigField("String", "SERVER_PORT", "\"${serverPort}\"")
             signingConfig =
                 signingConfigs.getByName("release")
             isMinifyEnabled = false
@@ -82,5 +77,4 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation("androidx.drawerlayout:drawerlayout:1.2.0")
     implementation("androidx.activity:activity-ktx:1.10.1")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
