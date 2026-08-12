@@ -10,8 +10,9 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  Build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,7 +20,7 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Setup JDK 21
+      - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           java-version: 21
@@ -28,28 +29,34 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Decode keystore (placed at project root)
+      - name: Decode keystore
         run: |
-          echo "${{ secrets.KEYSTORE_FILE }}" | base64 --decode > android_ca
+          echo "${{ secrets.KEYSTORE_FILE }}" | base64 --decode > app/android_ca
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease
+        run: |
+          bash ./gradlew assembleRelease
         env:
           KEYSTORE_FILE: android_ca
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Get tag name
-        run: echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
-
-      - name: Rename APK
+      - name: Rename APK with tag name
         run: |
-          cd app/build/outputs/apk/release
-          mv *.apk com.raysonstudio.cctv_view_${TAG_NAME}.apk
+          TAG_NAME="${{ github.ref_name }}"
+          APK_DIR="app/build/outputs/apk/release"
+          if [ -f "$APK_DIR/app-release.apk" ]; then
+            mv "$APK_DIR/app-release.apk" "$APK_DIR/com.raysonstudio.cctv_view_${TAG_NAME}.apk"
+          else
+            FIRST_APK=$(find "$APK_DIR" -maxdepth 1 -name "*.apk" | head -n 1)
+            if [ -n "$FIRST_APK" ]; then
+              mv "$FIRST_APK" "$APK_DIR/com.raysonstudio.cctv_view_${TAG_NAME}.apk"
+            fi
+          fi
 
-      - name: Create Release and Upload APK
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            app/build/outputs/apk/release/com.raysonstudio.cctv_view_${{ env.TAG_NAME }}.apk
+            app/build/outputs/apk/release/com.raysonstudio.cctv_view_*.apk
