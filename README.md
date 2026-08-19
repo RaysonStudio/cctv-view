@@ -38,16 +38,16 @@
 
 ## 系统要求
 
-- Android 14 或更高版本
+- Android 8 或更高版本
 - 目标设备：Android TV / 电视盒子
 - 已测试设备：小米电视 S85 Mini LED
-- 已测试系统：Xiaomi HyperOS 3.0.103.0
+- 已测试系统：Xiaomi HyperOS 3.0.103.0(Android 14)
 
 ## 快速开始
 
 ### 普通用户
 
-1. 前往 [Releases](https://github.com/RaysonStudio/cctv-view/releases) 下载最新版 `app-debug.apk`。
+1. 前往 [Releases](https://github.com/RaysonStudio/cctv-view/releases) 下载最新版 `com.raysonstudio.cctv_view_*.apk`。
 2. 将 APK 拷贝到 U 盘并插入电视。
 3. 在电视上使用文件管理器打开 APK 并安装。
 4. 安装完成后，在应用列表中找到 **央视网** 并打开。
@@ -79,13 +79,31 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ```text
 cctv-view/
+├── .github/
+│   ├── ISSUE_TEMPLATE/        # Bug 反馈与功能请求模板
+│   └── PULL_REQUEST_TEMPLATE.md
 ├── app/
-│   ├── src/main/java/com/raysonstudio/cctv_view/
-│   │   ├── MainActivity.kt      # 主界面与 WebView 逻辑
-│   │   └── ChannelManager.kt    # 频道数据管理
-│   └── src/main/res/            # 布局、图标、资源
+│   ├── src/main/
+│   │   ├── AndroidManifest.xml
+│   │   ├── java/com/raysonstudio/cctv_view/
+│   │   │   ├── MainActivity.kt          # 主界面：视图绑定、抽屉菜单、按键分发、生命周期转发
+│   │   │   ├── CctvWebConfig.kt          # WebView 常量与配置
+│   │   │   ├── CctvWebViewClient.kt      # WebViewClient：请求拦截与 HTML 注入
+│   │   │   ├── VideoPollController.kt    # 视频轮询状态机与重试
+│   │   │   └── ChannelManager.kt         # 频道数据管理
+│   │   └── res/                          # 布局、图标、资源
+│   └── build.gradle.kts
+├── gradle/
+│   └── libs.versions.toml        # 依赖版本目录
 ├── build.gradle.kts
-└── README.md
+├── settings.gradle.kts
+├── LICENSE
+├── README.md
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+├── SECURITY.md
+└── .editorconfig
 ```
 
 ## 技术栈
@@ -94,6 +112,15 @@ cctv-view/
 - Android SDK 14+
 - Android WebView
 - Gradle + Kotlin DSL
+
+## 贡献
+
+欢迎提交 Issue、Pull Request 或改进文档：
+
+- 贡献流程与代码风格见 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 安全漏洞上报见 [SECURITY.md](SECURITY.md)
+- 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 致谢
 

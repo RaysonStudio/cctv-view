@@ -1,7 +1,7 @@
 [versions]
 coreKtx = "1.15.0"
 appcompat = "1.6.1"
-agp = "8.9.2"
+agp = "8.13.2"
 kotlin = "2.1.20"
 composeBom = "2024.09.00"
 tvFoundation = "1.0.0-alpha07"
