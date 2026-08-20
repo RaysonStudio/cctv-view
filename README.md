@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/RaysonStudio/cctv-view?logo=github&color=blue)](https://github.com/RaysonStudio/cctv-view/releases)
 [![Platform](https://img.shields.io/badge/platform-Android%20TV-brightgreen)](https://developer.android.com/tv)
-[![Android](https://img.shields.io/badge/Android-14%2B-green)](https://developer.android.com/about/versions/14)
+[![Android](https://img.shields.io/badge/Android-14%2B-green)](https://developer.android.com/about/versions/8)
 [![License](https://img.shields.io/github/license/RaysonStudio/cctv-view?color=orange)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/RaysonStudio/cctv-view?style=social)](https://github.com/RaysonStudio/cctv-view/stargazers)
 [![Linux DO](https://img.shields.io/badge/Linux%20DO-社区讨论-blue)](https://linux.do)
