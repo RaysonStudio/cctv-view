@@ -13,13 +13,13 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- 1. WebView：放在最底层，撑满屏幕 -->
-        <WebView
+        <!-- 腾讯 X5 WebView：单实例，撑满屏幕 -->
+        <com.tencent.smtt.sdk.WebView
             android:id="@+id/webView"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <!-- 2. 居中的加载层：盖在 WebView 上面 -->
+        <!-- 居中的加载层：盖在 WebView 上面 -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

@@ -19,7 +19,7 @@ package com.raysonstudio.cctv_view
 import android.os.Handler
 import android.util.Log
 import android.view.View
-import android.webkit.WebView
+import com.tencent.smtt.sdk.WebView
 import android.widget.ProgressBar
 
 /**

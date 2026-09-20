@@ -18,11 +18,11 @@ package com.raysonstudio.cctv_view
 
 import android.graphics.Bitmap
 import android.util.Log
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import com.tencent.smtt.export.external.interfaces.WebResourceError
+import com.tencent.smtt.export.external.interfaces.WebResourceRequest
+import com.tencent.smtt.export.external.interfaces.WebResourceResponse
+import com.tencent.smtt.sdk.WebView
+import com.tencent.smtt.sdk.WebViewClient
 
 /**
  * 央视频首页的 [WebViewClient]：

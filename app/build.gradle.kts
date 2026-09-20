@@ -18,10 +18,14 @@ android {
 
     defaultConfig {
         applicationId = "com.raysonstudio.cctv_view"
-        minSdk = 26
-        targetSdk = 34
-        versionCode = 3
-        versionName = "2.1"
+        // 面向老旧电视盒子：参考 CCTV_Viewer，最低支持 Android 4.2 (API 17)。
+        // 注意：腾讯 X5/TBS 内核本身要求 Android 4.0 (API 14) 及以上，
+        // AndroidX 依赖要求 API 14 及以上，因此无法降到 Android 2.x (API <= 10)。
+        minSdk = 17
+        targetSdk = 28
+        versionCode = 4
+        versionName = "2.2"
+        multiDexEnabled = true
     }
 
     buildFeatures {
@@ -75,6 +79,9 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
-    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
-    implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.drawerlayout)
+    implementation(libs.androidx.multidex)
+    // 腾讯 X5 (TBS) 内核 SDK
+    implementation(libs.tencent.tbs)
 }

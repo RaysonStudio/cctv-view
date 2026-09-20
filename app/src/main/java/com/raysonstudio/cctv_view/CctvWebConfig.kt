@@ -16,14 +16,15 @@
 
 package com.raysonstudio.cctv_view
 
-import android.os.Build
+import android.content.Context
 import android.util.Log
 import android.view.View
-import android.webkit.CookieManager
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
-import android.webkit.WebView
+import com.tencent.smtt.export.external.interfaces.WebResourceRequest
+import com.tencent.smtt.export.external.interfaces.WebResourceResponse
+import com.tencent.smtt.sdk.CookieManager
+import com.tencent.smtt.sdk.WebSettings
+import com.tencent.smtt.sdk.WebView
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -92,6 +93,74 @@ object CctvWebConfig {
         "google", "baidu", "cnzz", "umeng"      // 第三方统计
     )
 
+    // ===== 主文档 HTML 缓存 =====
+    // 央视频 TV 首页是同一个 Vue SPA 壳（所有频道共用，pid 只存在于 URL 中），
+    // 因此一份 HTML 可以对所有频道复用。缓存后 shouldInterceptRequest 直接本地返回，
+    // 避免每次启动/换台都在渲染管线关键路径上做同步网络请求（旧实现的最大卡顿点）。
+    private const val CACHE_MAX_AGE_MS = 30 * 60 * 1000L   // 命中缓存的最长时长：30 分钟
+    private const val REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000L // 后台刷新最小间隔：5 分钟
+    private const val HOME_URL = "https://www.yangshipin.cn/tv/home?pid=600001859"
+    private const val CACHE_CHARSET = "utf-8"
+    private const val CACHE_FILE = "ysp_home.html"
+    private const val DISK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000L // 磁盘缓存最长 7 天
+
+    @Volatile private var cachedHtml: String? = null
+    @Volatile private var cachedAt: Long = 0L
+    @Volatile private var lastRefreshAt: Long = 0L
+    private val cacheLock = Any()
+    private lateinit var appContext: Context
+
+    /**
+     * 初始化：加载磁盘缓存到内存（冷启动即可命中，无需等待网络）。
+     * 需在 [warmUp] 或 [interceptMainFrame] 之前调用一次。
+     */
+    fun init(context: Context) {
+        appContext = context.applicationContext
+        loadDiskCache()
+    }
+
+    /** 应用启动时后台预热主文档缓存，让首次加载也能命中缓存 */
+    fun warmUp(userAgent: String) {
+        refreshCacheInBackground(userAgent, force = true)
+    }
+
+    // ===== 磁盘缓存（外存缓存目录） =====
+
+    private fun cacheFile(): File {
+        val dir = appContext.externalCacheDir ?: appContext.cacheDir
+        return File(dir, CACHE_FILE)
+    }
+
+    /** 从磁盘读入内存缓存 */
+    private fun loadDiskCache() {
+        try {
+            val f = cacheFile()
+            if (f.exists() && System.currentTimeMillis() - f.lastModified() <= DISK_MAX_AGE_MS) {
+                val html = f.readText(Charsets.UTF_8)
+                if (html.isNotEmpty()) {
+                    synchronized(cacheLock) {
+                        cachedHtml = html
+                        cachedAt = f.lastModified()
+                    }
+                    Log.d("CCTV_CACHE", "disk cache loaded, len=" + html.length)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("CCTV_CACHE", "disk cache load failed: " + e.message)
+        }
+    }
+
+    /** 内存缓存更新时同步落盘 */
+    private fun persistCache(html: String) {
+        try {
+            val f = cacheFile()
+            f.parentFile?.mkdirs()
+            f.writeText(html, Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.w("CCTV_CACHE", "disk cache persist failed: " + e.message)
+        }
+    }
+
     /**
      * 配置 WebView 的 WebSettings，返回桌面 Chrome UA。
      */
@@ -102,7 +171,9 @@ object CctvWebConfig {
         val settings = webView.settings
         settings.domStorageEnabled = true
         settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        // X5 没有 MIXED_CONTENT_* 常量；LOAD_NORMAL(=0) 等价于「始终允许混合内容」，
+        // 保证 HTTPS 页面可加载 HTTP 直播流 / CDN 资源（与参考项目 CCTV_Viewer 一致）
+        settings.setMixedContentMode(WebSettings.LOAD_NORMAL)
         @Suppress("SetJavaScriptEnabled")
         settings.javaScriptEnabled = true
         settings.mediaPlaybackRequiresUserGesture = false
@@ -117,10 +188,8 @@ object CctvWebConfig {
         settings.allowContentAccess = false
 
         // ===== 性能优化 =====
-        // 预加载 DNS：央视频核心域名提前解析
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            webView.settings.offscreenPreRaster = true // 离屏预渲染
-        }
+        // 注意：不再启用 offscreenPreRaster——双缓冲下后台 WebView 离屏预渲染
+        // 会触发 "tile memory limits exceeded"，抢 GPU 显存导致前台掉帧/卡顿
         // 视口设置：确保 100% 尺寸正确映射到 WebView 像素
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
@@ -164,8 +233,8 @@ object CctvWebConfig {
     }
 
     /**
-     * 同步抓取央视频 TV 首页 HTML，注入 [EARLY_CSS] 后以 [WebResourceResponse] 形式返回。
-     * 复制原请求头与 Cookie，保证上游鉴权逻辑正常。
+     * 主文档拦截：优先从本地缓存返回（所有频道共用同一 SPA 壳，一份 HTML 通用），
+     * 缓存未命中或过期时才走同步网络抓取（仅首次冷启动），之后每次换台都是本地即时返回。
      */
     fun interceptMainFrame(
         request: WebResourceRequest,
@@ -176,6 +245,31 @@ object CctvWebConfig {
             Log.d("CCTV_INTERCEPT", "SKIP non-GET method=${request.method} url=$url")
             return null
         }
+
+        val cached = cachedHtml
+        if (cached != null && System.currentTimeMillis() - cachedAt <= CACHE_MAX_AGE_MS) {
+            Log.d("CCTV_CACHE", "HIT serve cached html url=$url")
+            refreshCacheInBackground(userAgent, force = false)
+            return buildHtmlResponse(cached)
+        }
+
+        return fetchAndCacheMainFrame(request, url, userAgent)
+    }
+
+    /** 从缓存内容直接构造响应（无网络、无阻塞） */
+    private fun buildHtmlResponse(html: String): WebResourceResponse =
+        WebResourceResponse(
+            "text/html", CACHE_CHARSET, 200, "OK",
+            emptyMap(),
+            java.io.ByteArrayInputStream(html.toByteArray(Charsets.UTF_8))
+        )
+
+    /** 同步抓取（仅冷启动/缓存过期），成功后写入缓存并触发后台刷新 */
+    private fun fetchAndCacheMainFrame(
+        request: WebResourceRequest,
+        url: String,
+        userAgent: String
+    ): WebResourceResponse? {
         Log.d("CCTV_INTERCEPT", "START fetch url=$url")
         var connection: HttpURLConnection? = null
         return try {
@@ -225,8 +319,13 @@ object CctvWebConfig {
 
             val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val modifiedHtml = injectCssIntoHtml(html, EARLY_CSS)
-            val bytes = modifiedHtml.toByteArray(Charsets.UTF_8)
+            synchronized(cacheLock) {
+                cachedHtml = modifiedHtml
+                cachedAt = System.currentTimeMillis()
+            }
+            persistCache(modifiedHtml)
             Log.d("CCTV_INTERCEPT", "OK code=$responseCode html=${html.length} modified=${modifiedHtml.length} cssLen=${EARLY_CSS.length} url=$url")
+            refreshCacheInBackground(userAgent, force = false)
 
             WebResourceResponse(
                 contentType.substringBefore(";"),
@@ -234,10 +333,72 @@ object CctvWebConfig {
                 responseCode,
                 connection.responseMessage ?: "OK",
                 emptyMap(),
-                java.io.ByteArrayInputStream(bytes)
+                java.io.ByteArrayInputStream(modifiedHtml.toByteArray(Charsets.UTF_8))
             )
         } catch (e: Exception) {
             Log.e("CCTV_INTERCEPT", "EXCEPTION ${e.javaClass.simpleName}: ${e.message} url=$url")
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    /** 后台刷新缓存：不阻塞任何线程，失败则保留旧缓存 */
+    private fun refreshCacheInBackground(userAgent: String, force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return
+        lastRefreshAt = now
+        Thread {
+            try {
+                val fresh = fetchHomeHtml(HOME_URL, userAgent)
+                if (fresh != null) {
+                    synchronized(cacheLock) {
+                        cachedHtml = fresh
+                        cachedAt = System.currentTimeMillis()
+                    }
+                    persistCache(fresh)
+                }
+            } catch (e: Exception) {
+                Log.w("CCTV_CACHE", "background refresh failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    /** 后台线程使用的简化抓取（UA + Cookie），结果同样注入 CSS 并去除 prefetch */
+    private fun fetchHomeHtml(url: String, userAgent: String): String? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = URL(url).openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.instanceFollowRedirects = true
+            connection.doInput = true
+            connection.setRequestProperty("User-Agent", userAgent)
+            connection.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+            val cookie = CookieManager.getInstance().getCookie(url)
+            if (!cookie.isNullOrEmpty()) {
+                connection.setRequestProperty("Cookie", cookie)
+            }
+            connection.connect()
+            var i = 0
+            while (true) {
+                val key = connection.getHeaderFieldKey(i) ?: break
+                if (key.equals("Set-Cookie", ignoreCase = true)) {
+                    connection.getHeaderField(i)?.let { CookieManager.getInstance().setCookie(url, it) }
+                }
+                i++
+            }
+            if (connection.responseCode !in 200..299) {
+                Log.w("CCTV_CACHE", "refresh non-2xx code=${connection.responseCode} url=$url")
+                return null
+            }
+            val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val modified = injectCssIntoHtml(html, EARLY_CSS)
+            Log.d("CCTV_CACHE", "refreshed html=${html.length} modified=${modified.length} url=$url")
+            modified
+        } catch (e: Exception) {
+            Log.w("CCTV_CACHE", "fetch failed ${e.javaClass.simpleName}: ${e.message} url=$url")
             null
         } finally {
             connection?.disconnect()
@@ -310,6 +471,8 @@ object CctvWebConfig {
                             // 弹窗浮层
                             '.dialog','.modal','.popup','.mask','.overlay','.toast'
                         ];
+                        // 供 MutationObserver 快速过滤用的合并选择器（避免每次全量清理）
+                        window.__cctvSel = selectors.join(',') + ',img,picture,figure,svg,canvas';
                         for(var i=0;i<selectors.length;i++){
                             try{
                                 var nodes=document.querySelectorAll(selectors[i]);
@@ -371,7 +534,8 @@ object CctvWebConfig {
                         }
 
                         // 兜底2：body 下除 #app / script / style 外全部删除
-                        var bodyKids=Array.from(document.body.children);
+                        // （页面极早期 body 可能为 null，需判空，否则本轮清理整体中断）
+                        var bodyKids = document.body ? Array.from(document.body.children) : [];
                         for(var bk=0;bk<bodyKids.length;bk++){
                             var bc=bodyKids[bk];
                             var tag=bc.tagName.toLowerCase();
@@ -402,15 +566,43 @@ object CctvWebConfig {
                     window.__cctvCleaning=false;
                 };
                 window.cctvClean();
-                // 多次延迟重清，应对央视频 SPA 动态插入
-                setTimeout(function(){ window.cctvClean(); }, 500);
+                // 延迟重清 + 周期兜底：覆盖 SPA 启动后期动态插入/原地 patch 的元素
+                // （原地 patch 不产生 childList 变化，过滤式 MutationObserver 抓不到）
+                setTimeout(function(){ window.cctvClean(); }, 400);
                 setTimeout(function(){ window.cctvClean(); }, 1500);
-                setTimeout(function(){ window.cctvClean(); }, 3500);
-                setTimeout(function(){ window.cctvClean(); }, 7000);
+                for(var pc=0; pc<8; pc++){
+                    (function(n){
+                        setTimeout(function(){ window.cctvClean(); }, 2500 + n*2000);
+                    })(pc);
+                }
                 if(!window.cctvObserver){
                     window.cctvObserver=new MutationObserver(function(mutations){
-                        clearTimeout(window.__cctvCleanTimer);
-                        window.__cctvCleanTimer=setTimeout(function(){ window.cctvClean(); }, 600);
+                        // 只关心"可能含播放器/被清理元素"的新增节点；
+                        // SPA 高频重绘（文本/普通节点）直接过滤掉，不再每次触发全量清理
+                        for(var mi=0;mi<mutations.length;mi++){
+                            var added=mutations[mi].addedNodes;
+                            for(var aj=0;aj<added.length;aj++){
+                                var anode=added[aj];
+                                if(!anode || anode.nodeType!==1) continue;
+                                var needClean=false;
+                                try{
+                                    if(anode.matches && anode.matches(window.__cctvSel)){ needClean=true; }
+                                    else if(anode.querySelector){
+                                        if(anode.querySelector('video.video-js')){ needClean=true; }
+                                        else if(anode.querySelector(window.__cctvSel)){ needClean=true; }
+                                    }
+                                }catch(e){}
+                                if(needClean){
+                                    if(!window.__cctvCleanTimer){
+                                        window.__cctvCleanTimer=setTimeout(function(){
+                                            window.__cctvCleanTimer=null;
+                                            window.cctvClean();
+                                        }, 800);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     });
                     window.cctvObserver.observe(document.documentElement,{childList:true,subtree:true});
                 }

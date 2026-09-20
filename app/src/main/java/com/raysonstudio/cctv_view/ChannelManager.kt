@@ -82,6 +82,15 @@ object ChannelManager {
 
     val totalChannels = channelPids.size
 
+    fun getChannelName(index: Int): String {
+        // index 是 1-based
+        return if (index in 1..channelPids.size) {
+            channelPids[index - 1].first
+        } else {
+            channelPids[0].first
+        }
+    }
+
     fun getChannelUrl(index: Int): String {
         // index 是 1-based
         val pid = if (index in 1..channelPids.size) {

@@ -14,15 +14,23 @@
         android:required="true" />
 
 
-    <uses-permission
-        android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
 
     <application
 
+        android:name=".CctvApplication"
+
         android:allowBackup="true"
 
         android:usesCleartextTraffic="true"
+
+        android:requestLegacyExternalStorage="true"
 
         android:banner="@drawable/ic_banner"
 
@@ -71,6 +79,13 @@
 
 
         </activity>
+
+
+        <!-- 腾讯 TBS X5 内核的 DEX 加载服务 -->
+        <service
+            android:name="com.tencent.smtt.export.external.DexClassLoaderProviderService"
+            android:label="dexopt"
+            android:process=":dexopt" />
 
     </application>
 
