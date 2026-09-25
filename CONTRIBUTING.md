@@ -25,7 +25,7 @@
 1. Fork 本仓库并克隆到本地：
 
    ```bash
-   git clone https://github.com/<你的用户名>/cctv-view.git
+   git clone https://github.com/RaysonStudio/cctv-view.git
    cd cctv-view
    ```
 
