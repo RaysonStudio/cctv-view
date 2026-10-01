@@ -27,7 +27,30 @@ jobs:
           distribution: temurin
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "SDK_ROOT=$SDK_ROOT"
+          if [ -d "$SDK_ROOT/platforms/android-36" ] && [ -d "$SDK_ROOT/build-tools" ]; then
+            echo "SDK ready, skip install"
+            exit 0
+          fi
+          echo "SDK incomplete, installing..."
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          cd /tmp
+          # 逐个尝试可用版本（Google 会下线旧版 cmdline-tools，多备几个版本 + 重试）
+          for V in 13114758 11076708 12266719 10406996; do
+            URL="https://dl.google.com/android/repository/commandlinetools-linux-${V}_latest.zip"
+            echo "try download: $URL"
+            if curl -fsSL --retry 3 --retry-delay 5 -o clt.zip "$URL"; then
+              echo "downloaded version $V"
+              break
+            fi
+          done
+          unzip -q -o clt.zip -d "$SDK_ROOT/cmdline-tools"
+          rm -rf "$SDK_ROOT/cmdline-tools/latest"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "build-tools;35.0.0"
 
       - name: Decode keystore
         run: |
