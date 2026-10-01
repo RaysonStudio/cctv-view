@@ -32,9 +32,11 @@ import java.net.URL
  * 央视频 WebView 配置、URL 拦截策略与 CSS 注入工具集中在此。
  *
  * - [EARLY_CSS]：在 HTML <head> 中同步注入的全屏 CSS，从渲染管线源头隐藏非播放器元素
+ * - [HLS_PATCH_JS]：在 HTML <head> 中注入的 Hls 延迟补丁，包装 window.Hls 强制覆盖
+ *   播放器（hls.cmg.js）的直播同步配置，压低直播延迟并限制缓冲内存
  * - [TRUSTED_DOMAINS] / [VIDEO_EXTENSIONS] / [BLOCK_KEYWORDS]：拦截策略的放行/拦截清单
  * - [applySettings]：WebSettings 统一配置（桌面 Chrome UA、性能开关等）
- * - [interceptMainFrame]：同步抓取首页 HTML 并注入全屏 CSS
+ * - [interceptMainFrame]：同步抓取首页 HTML 并注入全屏 CSS 与 Hls 补丁
  * - [buildPageStartScript]：onPageStarted 阶段使用的兜底清理 + 监听 JS
  */
 object CctvWebConfig {
@@ -73,6 +75,110 @@ object CctvWebConfig {
         append(".tv-main-con-l>div:not(.tv-main-con-l-vid){display:none!important}\n")
     }
 
+    /**
+     * 在 HTML <head> 中注入的 Hls 延迟补丁（同步脚本）。
+     *
+     * 央视频 TV 页用 hls.js 定制版（hls.cmg.js，MSE + WASM DRM），页面代码 `new Hls()` 不传配置，
+     * 全部走内置默认：liveSyncDurationCount=3（起播落后直播边缘 3 个分片）、
+     * liveMaxLatencyDurationCount=Infinity（永不追回，卡顿累积到分钟级延迟）、
+     * liveSyncOnStallIncrease=1（每次卡顿同步点再后退 1 片）、
+     * backBufferLength=Infinity / maxMaxBufferLength=600（缓冲永不回收，电视盒子内存持续膨胀）。
+     *
+     * 这里包装 window.Hls 构造器，强制覆盖为低延迟 + 省内存配置：
+     * - liveSyncDurationCount=2：普通频道（分片约 9s）落后边缘 2 片 ≈ 18s。
+     *   小分片流（如 CCTV-8K 的分片仅 2s）在 MANIFEST_PARSED 后自适应改为 3 片 ≈ 6s
+     *   （直播窗口仅 6s，无法更深）。实测 1 片时播放头紧贴直播边缘、缓冲余量为零，
+     *   网络/解密任何抖动都会撞到缓冲末端形成"每次缓冲只播放 1 帧"的循环。
+     * - nudgeOnVideoHole=false：卡顿不再 nudge 前跳。实测 2s 分片的 8K 流上
+     *   nudge 每次前跳都会跳过 ~1-2s 画面（画面被跳开），且把播放头推向直播边缘
+     *   （棘轮效应：理论上落后 4s，实际只剩 0.8s，卡顿越来越频繁）。
+     *   关闭后卡顿变为短暂定格等待，分片到达后无缝续播、不丢内容。
+     * - liveMaxLatencyDurationCount=3（小分片流自适应 4）：落后过多（含待机恢复、
+     *   分片真正丢失）时一次性重同步回边缘，延迟封顶并自动收缩
+     * - liveSyncOnStallIncrease=0：卡顿恢复后同步点不后退，延迟不随卡顿累积
+     * - backBufferLength/liveBackBufferLength=30、maxMaxBufferLength=60：
+     *   及时回收旧缓冲（原值 Infinity/600，长时间播放内存持续膨胀）
+     *
+     * 注入点在 </head> 之前（hls.cmg.js 脚本标签之后、页面实例化播放器之前），
+     * 因此无论 hls.cmg.js 是否已执行都能包装成功：已加载则直接包装 window.Hls，
+     * 未加载则用 defineProperty setter 陷阱拦截其后的赋值。幂等，可重复执行。
+     */
+    val HLS_PATCH_JS: String = """
+        (function(){
+            try{
+                var REAL_KEY='__cctvRealHls';
+                function mergeConfig(config){
+                    config=config||{};
+                    try{
+                        config.liveSyncDurationCount=2;
+                        config.liveMaxLatencyDurationCount=3;
+                        config.liveSyncOnStallIncrease=0;
+                        config.nudgeOnVideoHole=false;
+                        config.backBufferLength=30;
+                        config.liveBackBufferLength=30;
+                        config.maxMaxBufferLength=60;
+                    }catch(e){}
+                    return config;
+                }
+                function patch(RealHls){
+                    if(!RealHls||RealHls.__cctvPatched)return RealHls;
+                    function PatchedHls(config){
+                        try{
+                            var inst=new RealHls(mergeConfig(config));
+                            try{
+                                window.__cctvHlsInstance=inst;
+                                var EV=RealHls.Events;
+                                if(EV&&EV.MANIFEST_PARSED&&!RealHls.__cctvTdHooked){
+                                    RealHls.__cctvTdHooked=true;
+                                    inst.on(EV.MANIFEST_PARSED,function(evt,data){
+                                        try{
+                                            var lv=(data&&data.levels&&data.levels.length)?data.levels[0]:null;
+                                            var d=lv&&lv.details;
+                                            var td=d?d.targetduration:0;
+                                            if(td>0&&td<=3&&inst.config){
+                                                inst.config.liveSyncDurationCount=3;
+                                                inst.config.liveMaxLatencyDurationCount=4;
+                                                console.log('[CCTV_JS] small-segment stream td='+td+' -> syncCount=3 maxLatency=4');
+                                            }
+                                        }catch(e){}
+                                    });
+                                }
+                            }catch(e2){}
+                            return inst;
+                        }catch(e){
+                            return new RealHls(config);
+                        }
+                    }
+                    PatchedHls.prototype=RealHls.prototype;
+                    for(var k in RealHls){
+                        try{
+                            if(Object.prototype.hasOwnProperty.call(RealHls,k)){ PatchedHls[k]=RealHls[k]; }
+                        }catch(e3){}
+                    }
+                    try{ PatchedHls.__proto__=RealHls; }catch(e4){}
+                    PatchedHls.__cctvPatched=true;
+                    return PatchedHls;
+                }
+                var cur=window.Hls;
+                if(cur){
+                    window[REAL_KEY]=patch(cur);
+                    console.log('[CCTV_JS] Hls patched (post-load)');
+                }
+                try{
+                    Object.defineProperty(window,'Hls',{
+                        configurable:true,
+                        enumerable:true,
+                        get:function(){ return window[REAL_KEY]; },
+                        set:function(v){
+                            window[REAL_KEY]=patch(v);
+                            console.log('[CCTV_JS] Hls patched (trap)');
+                        }
+                    });
+                }catch(e5){}
+            }catch(top){}
+        })();
+    """.trimIndent()
+
     // 央视频自家域名：全部放行（包含播放器API、时间同步、鉴权、WASM DRM等关键请求）
     val TRUSTED_DOMAINS = listOf(
         "yangshipin.cn",   // 所有子域：www/sapi/csapi/player-api/h5access/s/aatc-api/btrace/pcsite
@@ -101,7 +207,9 @@ object CctvWebConfig {
     private const val REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000L // 后台刷新最小间隔：5 分钟
     private const val HOME_URL = "https://www.yangshipin.cn/tv/home?pid=600001859"
     private const val CACHE_CHARSET = "utf-8"
-    private const val CACHE_FILE = "ysp_home.html"
+    // v2：加入 HLS_PATCH_JS 注入后更换文件名，使旧版本缓存失效，
+    // 保证升级后首次加载就能命中带延迟补丁的新 HTML（而不是旧的 30 分钟缓存）
+    private const val CACHE_FILE = "ysp_home_v2.html"
     private const val DISK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000L // 磁盘缓存最长 7 天
 
     @Volatile private var cachedHtml: String? = null
@@ -204,19 +312,21 @@ object CctvWebConfig {
     }
 
     /**
-     * 把 <style> 块注入到 HTML <head> 中（若找不到 </head> 则回退到 </html> 或文档首部）。
+     * 把 <style> 全屏 CSS 块与 <script> Hls 延迟补丁块注入到 HTML <head> 中
+     * （若找不到 </head> 则回退到 </html> 或文档首部）。
      */
     fun injectCssIntoHtml(html: String, css: String): String {
         val styleBlock = "<style id=\"cctv-early-css\">$css</style>"
+        val patchBlock = "<script id=\"cctv-hls-patch\">$HLS_PATCH_JS</script>"
         val headClose = html.indexOf("</head>", ignoreCase = true)
         return if (headClose >= 0) {
-            html.substring(0, headClose) + styleBlock + html.substring(headClose)
+            html.substring(0, headClose) + patchBlock + styleBlock + html.substring(headClose)
         } else {
             val htmlClose = html.indexOf("</html>", ignoreCase = true)
             if (htmlClose >= 0) {
-                html.substring(0, htmlClose) + styleBlock + html.substring(htmlClose)
+                html.substring(0, htmlClose) + patchBlock + styleBlock + html.substring(htmlClose)
             } else {
-                styleBlock + html
+                patchBlock + styleBlock + html
             }
         }
     }
@@ -417,9 +527,11 @@ object CctvWebConfig {
         return """
             (function(){
                 console.log('[CCTV_JS] onPageStarted');
+                $HLS_PATCH_JS
                 try{ if(window.cctvObserver){ window.cctvObserver.disconnect(); window.cctvObserver=null; } }catch(e){}
                 try{ if(window.cctvClean){ window.cctvClean(); } }catch(e){}
                 window.__cctvInited=false;
+                window.__cctvCleanedOnce=false;
                 window.__cctvLayoutDone=false;
                 window.__cctvStallStart=null;
                 window.__cctvStuckStart=null;
@@ -448,10 +560,15 @@ object CctvWebConfig {
                 window.cctvClean=function(){
                     if(window.__cctvCleaning) return;
                     window.__cctvCleaning=true;
+                    // 视频已在播放且已完成一次全量清理：跳过后续清理。
+                    // 播放期间的 DOM 大扫除会引起主线程卡顿 -> MSE 缓冲停顿 -> 直播延迟漂移，
+                    // 且全屏外观已由同步注入的 CSS 保证，重复清理纯属浪费 CPU/内存。
+                    var v=document.querySelector('video.video-js');
+                    var playing=!!(v&&!v.paused&&v.readyState>=2);
+                    if(playing&&window.__cctvCleanedOnce){ window.__cctvCleaning=false; return; }
                     var totalRemoved=0;
                     var totalHidden=0;
                     try{
-                        var v=document.querySelector('video.video-js');
                         var selectors=[
                             // 左右侧栏目
                             '.tv-zhan','.tv-zhan-shadow','.tv-zhan-con','.tv-zhan-title','.tv-zhan-kai','.tv-zhan-list',
@@ -563,18 +680,18 @@ object CctvWebConfig {
                         console.log('[CCTV_CLEAN] top error='+e);
                     }
                     console.log('[CCTV_CLEAN] done videoFound='+(v?1:0)+' removed='+totalRemoved+' hidden='+totalHidden);
+                    // 视频元素已出现且本轮完整跑完：后续（播放中的）清理轮次可以安全跳过
+                    if(v){ window.__cctvCleanedOnce=true; }
                     window.__cctvCleaning=false;
                 };
                 window.cctvClean();
                 // 延迟重清 + 周期兜底：覆盖 SPA 启动后期动态插入/原地 patch 的元素
                 // （原地 patch 不产生 childList 变化，过滤式 MutationObserver 抓不到）
+                // 裁剪：只保留启动后 7 秒内的 4 轮；播放开始后 cctvClean 内部会自动跳过
                 setTimeout(function(){ window.cctvClean(); }, 400);
                 setTimeout(function(){ window.cctvClean(); }, 1500);
-                for(var pc=0; pc<8; pc++){
-                    (function(n){
-                        setTimeout(function(){ window.cctvClean(); }, 2500 + n*2000);
-                    })(pc);
-                }
+                setTimeout(function(){ window.cctvClean(); }, 3500);
+                setTimeout(function(){ window.cctvClean(); }, 7000);
                 if(!window.cctvObserver){
                     window.cctvObserver=new MutationObserver(function(mutations){
                         // 只关心"可能含播放器/被清理元素"的新增节点；
@@ -596,8 +713,11 @@ object CctvWebConfig {
                                     if(!window.__cctvCleanTimer){
                                         window.__cctvCleanTimer=setTimeout(function(){
                                             window.__cctvCleanTimer=null;
-                                            window.cctvClean();
-                                        }, 800);
+                                            // 播放中且已清理过一次：跳过（同 cctvClean 内部的门控）
+                                            var v2=document.querySelector('video.video-js');
+                                            var playing2=!!(v2&&!v2.paused&&v2.readyState>=2);
+                                            if(!(playing2&&window.__cctvCleanedOnce)){ window.cctvClean(); }
+                                        }, 1500);
                                     }
                                     break;
                                 }
