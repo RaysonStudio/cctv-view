@@ -17,7 +17,7 @@
 
 - Android Studio (最新稳定版)
 - JDK 21
-- Android SDK 36 (compileSdk)，最低支持 26 (minSdk)
+- Android SDK 36 (compileSdk)，最低支持 17 (minSdk，即 Android 4.2)
 - 一台 Android TV 设备或 Android TV 模拟器用于调试
 
 ## 开发流程
