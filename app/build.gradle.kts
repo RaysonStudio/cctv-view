@@ -74,6 +74,14 @@ android {
             isMinifyEnabled = false
         }
     }
+
+    lint {
+        // release 构建默认执行 lintVital，需要从 dl.google.com 现下 lint-checks / intellij-core /
+        // kotlin-compiler 等工具包（约数百 MB）；网络不稳时会让 CI 与本地 release 构建直接失败。
+        // 本项目不使用 lint 门禁，关闭以保证打包稳定与提速。
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
 }
 
 dependencies {
