@@ -91,13 +91,17 @@ object ChannelManager {
         }
     }
 
-    fun getChannelUrl(index: Int): String {
+    fun getChannelPid(index: Int): String {
         // index 是 1-based
-        val pid = if (index in 1..channelPids.size) {
+        return if (index in 1..channelPids.size) {
             channelPids[index - 1].second
         } else {
             channelPids[0].second // 默认CCTV1
         }
-        return "https://www.yangshipin.cn/tv/home?pid=$pid"
+    }
+
+    fun getChannelUrl(index: Int): String {
+        // index 是 1-based
+        return "https://www.yangshipin.cn/tv/home?pid=" + getChannelPid(index)
     }
 }

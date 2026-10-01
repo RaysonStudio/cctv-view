@@ -63,6 +63,7 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
 
     private var exitTime = 0L
     private var currentChannel = 1 // 1-based
+    private var firstMenuOpen = true // 本次启动内首次打开菜单时滚到顶部展示收藏夹
 
     private lateinit var channelAdapter: ChannelAdapter
     private val menuRows = ArrayList<MenuRow>()
@@ -97,6 +98,23 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
         channelAdapter = ChannelAdapter(this, menuRows, favorites)
         channelList.adapter = channelAdapter
         rebuildMenu()
+
+        // EPG：侧边栏每行右侧显示该频道正在播的节目（EpgManager 后台拉取+解码）
+        EpgManager.attach { channelAdapter.notifyDataSetChanged() }
+        EpgManager.start()
+        EpgManager.ensureFresh(1, favorites)
+        drawerLayout.addDrawerListener(object : DrawerLayout.SimpleDrawerListener() {
+            override fun onDrawerOpened(drawerView: View) {
+                channelAdapter.marqueeEnabled = true
+                channelAdapter.notifyDataSetChanged()
+                EpgManager.ensureFresh(currentChannel, favorites) // 打开菜单时顺手刷新
+            }
+
+            override fun onDrawerClosed(drawerView: View) {
+                channelAdapter.marqueeEnabled = false
+                channelAdapter.notifyDataSetChanged()
+            }
+        })
 
         videoPollController = VideoPollController(webView, handler, loadingProgress, this)
 
@@ -185,6 +203,7 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
     private fun loadChannel(channelIndex: Int) {
         videoPollController.resetForChannelChange()
         currentChannel = channelIndex
+        EpgManager.ensureFresh(channelIndex, favorites) // 换台时优先刷新该频道的节目单
         loadingProgress.visibility = View.VISIBLE
         val url = ChannelManager.getChannelUrl(channelIndex)
         Log.d("CCTV_KEY", "Loading URL: $url")
@@ -322,6 +341,7 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
     }
 
     override fun onDestroy() {
+        EpgManager.detach()
         videoPollController.onDestroy()
         handler.removeCallbacksAndMessages(null)
         webView.stopLoading()
@@ -388,8 +408,12 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
                 } else {
                     selectablePositions().firstOrNull()?.let { channelList.setSelection(it) }
                 }
-                // 选中 CCTV1 的同时把列表滚回顶部，保证「收藏夹」标题及下方内容可见
-                channelList.post { channelList.smoothScrollToPosition(0) }
+                // 首次打开菜单：选中当前频道的同时把列表滚回顶部，保证「收藏夹」标题及下方内容可见
+                if (firstMenuOpen) {
+                    firstMenuOpen = false
+                    channelList.post { channelList.smoothScrollToPosition(0) }
+                }
+                // 之后打开菜单：不再强制滚回顶部，列表停留在 setSelection(anchor) 定位到的当前频道（focus）附近
             }
             return true
         }

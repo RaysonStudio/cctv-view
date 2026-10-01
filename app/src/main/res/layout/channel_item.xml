@@ -1,8 +1,9 @@
-<!-- 假设你的最外层是 LinearLayout -->
+<!-- 频道行：左侧频道名（占满剩余空间之外的宽度），右侧正在播的节目名（超宽跑马灯） -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
+    android:gravity="center_vertical"
     android:padding="16dp"
     android:background="@drawable/list_item_selector"> <!-- 添加这一行 -->
 
@@ -12,5 +13,18 @@
         android:layout_height="wrap_content"
         android:textColor="#FFFFFF"
         android:textSize="18sp" />
+
+    <TextView
+        android:id="@+id/programName"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="8dp"
+        android:gravity="end"
+        android:singleLine="true"
+        android:ellipsize="marquee"
+        android:marqueeRepeatLimit="marquee_forever"
+        android:textColor="#99FFFFFF"
+        android:textSize="14sp" />
 
 </LinearLayout>

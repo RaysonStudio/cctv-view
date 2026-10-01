@@ -59,6 +59,12 @@ class ChannelAdapter(
         private const val TYPE_CHANNEL = 3
     }
 
+    /**
+     * 跑马灯总开关：侧边栏打开时开启（超宽节目名滚动显示），
+     * 关闭时置 false，避免抽屉收起后隐藏列表里的跑马灯仍在后台空转耗电。
+     */
+    var marqueeEnabled: Boolean = true
+
     override fun getCount(): Int = rows.size
 
     override fun getItem(position: Int): Any = rows[position]
@@ -96,6 +102,7 @@ class ChannelAdapter(
                 val v = convertView ?: inflater.inflate(R.layout.channel_item, parent, false)
                 v.findViewById<TextView>(R.id.channelName).text =
                     ChannelManager.getChannelName(row.channelIndex)
+                bindProgram(v, row.channelIndex)
                 v
             }
             is MenuRow.Channel -> {
@@ -103,8 +110,16 @@ class ChannelAdapter(
                 val name = ChannelManager.getChannelName(row.channelIndex)
                 v.findViewById<TextView>(R.id.channelName).text =
                     if (row.channelIndex in favorites) "★ $name" else name
+                bindProgram(v, row.channelIndex)
                 v
             }
         }
+    }
+
+    /** 绑定该频道「正在播」的节目名；isSelected 用于驱动 TextView 跑马灯 */
+    private fun bindProgram(v: View, channelIndex: Int) {
+        val programView = v.findViewById<TextView>(R.id.programName)
+        programView.text = EpgManager.getProgramName(ChannelManager.getChannelPid(channelIndex)) ?: ""
+        programView.isSelected = marqueeEnabled
     }
 }
