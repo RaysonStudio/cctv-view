@@ -23,8 +23,8 @@ android {
         // AndroidX 依赖要求 API 14 及以上，因此无法降到 Android 2.x (API <= 10)。
         minSdk = 17
         targetSdk = 28
-        versionCode = 4
-        versionName = "2.2"
+        versionCode = 5
+        versionName = "3.0"
         multiDexEnabled = true
     }
 
