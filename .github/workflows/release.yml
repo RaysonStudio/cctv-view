@@ -26,6 +26,12 @@ jobs:
           java-version: 21
           distribution: temurin
 
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-write-only: ${{ github.ref_type != 'tag' }}
+          gradle-home-cache-cleanup: true
+
       - name: Setup Android SDK
         run: |
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
@@ -58,7 +64,18 @@ jobs:
 
       - name: Build Release APK
         run: |
-          bash ./gradlew assembleRelease
+          # 依赖仓库（阿里云镜像）偶发超时/断流，带重试：最多 3 次
+          for i in 1 2 3; do
+            echo "===== gradle assembleRelease attempt $i ====="
+            if bash ./gradlew assembleRelease --stacktrace; then
+              echo "===== build success ====="
+              exit 0
+            fi
+            echo "===== attempt $i failed, retrying... ====="
+            sleep 15
+          done
+          echo "===== all attempts failed ====="
+          exit 1
         env:
           KEYSTORE_FILE: android_ca
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
