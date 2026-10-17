@@ -18,13 +18,12 @@ android {
 
     defaultConfig {
         applicationId = "com.raysonstudio.cctv_view"
-        // 面向老旧电视盒子：参考 CCTV_Viewer，最低支持 Android 4.2 (API 17)。
-        // 注意：腾讯 X5/TBS 内核本身要求 Android 4.0 (API 14) 及以上，
-        // AndroidX 依赖要求 API 14 及以上，因此无法降到 Android 2.x (API <= 10)。
-        minSdk = 17
+        // 原生播放使用 Media3 ExoPlayer（要求 API 21+），因此最低系统版本上调到 Android 5.0。
+        // 原生方案用系统硬件解码直连央视 CDN，是零卡顿的关键；WebView 网页方案保留为自动兜底。
+        minSdk = 21
         targetSdk = 28
-        versionCode = 5
-        versionName = "3.0"
+        versionCode = 7
+        versionName = "4.0"
         multiDexEnabled = true
     }
 
@@ -90,6 +89,10 @@ dependencies {
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.drawerlayout)
     implementation(libs.androidx.multidex)
-    // 腾讯 X5 (TBS) 内核 SDK
+    // 腾讯 X5 (TBS) 内核 SDK（WebView 兜底路径用）
     implementation(libs.tencent.tbs)
+    // 原生播放：Media3 ExoPlayer + HLS
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.hls)
+    implementation(libs.androidx.media3.ui)
 }

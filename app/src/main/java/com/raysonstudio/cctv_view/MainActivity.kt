@@ -23,6 +23,11 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.tencent.smtt.export.external.interfaces.ConsoleMessage
 import com.tencent.smtt.sdk.WebChromeClient
 import com.tencent.smtt.sdk.WebView
@@ -40,20 +45,27 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.drawerlayout.widget.DrawerLayout
 
 /**
- * 央视频 TV 直播壳的入口 Activity（单 WebView）。
+ * 央视频 TV 直播壳的入口 Activity。
  *
- * 观看体验优先：只维护一个 WebView，杜绝双播放器/双解码/音频焦点抢占导致的卡顿。
- * 启动与切台的加速全部依靠 [CctvWebConfig] 的「内存缓存 + 磁盘缓存」：
- * - 内存缓存：shouldInterceptRequest 直接本地返回首页 HTML，换台不再同步抓网
- * - 磁盘缓存：首页 HTML 落盘，冷启动时先从磁盘读入内存，再后台刷新
+ * 主路径：原生播放——[YspPlaylistServer] 在 127.0.0.1 起本地 HLS 代理
+ * （JCE 时移协议为主、bkliveinfo+cKey 备用），ExoPlayer 直连央视 CDN 明文分片，
+ * 系统硬件解码，无 JS / WASM / 逐片解密，这是零卡顿的根本保证。
+ *
+ * 兜底路径：原生播放多次失败后自动回退到旧的 WebView 网页方案（X5 内核 + hls.js）。
  */
 class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollController.Callback {
 
     private lateinit var drawerLayout: DrawerLayout
     private lateinit var webView: WebView
+    private lateinit var playerView: PlayerView
     private lateinit var loadingProgress: ProgressBar
     private lateinit var channelList: ListView
     private lateinit var splashLogo: ImageView
+
+    private var exoPlayer: ExoPlayer? = null
+    private var nativeMode = true          // true=原生 ExoPlayer；false=WebView 兜底
+    private var nativeRetries = 0          // 原生重试计数（错误/超时）
+    private var nativeReady = false        // 当前频道是否已进入 READY
 
     private var windowInsetsController: WindowInsetsControllerCompat? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -70,6 +82,8 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
     private val favorites = LinkedHashSet<Int>() // 1-based 频道索引，按收藏顺序
     private val prefs by lazy { getSharedPreferences("cctv_view", MODE_PRIVATE) }
 
+    private val loadWatchdog = Runnable { onNativeLoadStuck() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -84,6 +98,7 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
         drawerLayout = findViewById(R.id.drawerLayout)
         val container: FrameLayout = findViewById(R.id.webViewContainer)
         webView = container.findViewById(R.id.webView)
+        playerView = container.findViewById(R.id.playerView)
         channelList = findViewById(R.id.channelList)
         loadingProgress = findViewById(R.id.loadingProgress)
 
@@ -119,9 +134,15 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
         videoPollController = VideoPollController(webView, handler, loadingProgress, this)
 
         setupWebView()
+        setupExoPlayer()
         setupMenu()
 
-        // 后台预热（内存缓存未命中时从网络抓取并落盘）
+        // 原生播放基建：本地 HLS 代理 + streamId 后台刷新
+        YspPlaylistServer.start()
+        YspChannelSidRefresher.start()
+        Thread { YspChannelSidRefresher.refresh() }.apply { isDaemon = true }.start()
+
+        // 后台预热（网页兜底路径用，内存缓存未命中时从网络抓取并落盘）
         CctvWebConfig.warmUp(userAgent)
 
         loadChannel(1)
@@ -143,6 +164,131 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
         })
     }
 
+    // ==================== 原生播放（主路径） ====================
+
+    // 播放器统一请求头：央视 CDN 分片要求 qqlive UA + Referer（bklive CDN 缺一即 403）
+    private val playerDataSourceFactory by lazy {
+        androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setUserAgent("qqlive")
+            .setDefaultRequestProperties(mapOf("Referer" to "https://live.cctv.cn/"))
+    }
+
+    private fun setupExoPlayer() {
+        val player = ExoPlayer.Builder(this).build()
+        exoPlayer = player
+        playerView.player = player
+        playerView.useController = false
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> {
+                        if (nativeMode && !nativeReady) {
+                            loadingProgress.visibility = View.VISIBLE
+                        }
+                    }
+                    Player.STATE_READY -> onNativeReady()
+                    Player.STATE_ENDED -> {
+                        // 直播播放列表滑窗理论上不会 ENDED；出现说明上游断流，重试
+                        if (nativeMode && nativeRetries < 2) {
+                            Log.w("CCTV_NATIVE", "STATE_ENDED -> retry")
+                            retryNative()
+                        }
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                // 打印完整错误链，定位具体失败请求
+                val chain = StringBuilder()
+                var cause: Throwable? = error
+                var depth = 0
+                while (cause != null && depth < 5) {
+                    chain.append(" <- ").append(cause.javaClass.simpleName)
+                        .append(": ").append(cause.message?.take(200))
+                    cause = cause.cause
+                    depth++
+                }
+                Log.e("CCTV_NATIVE", "player error: ${error.errorCodeName}$chain")
+                if (!nativeMode) return
+                if (nativeRetries < 2) {
+                    retryNative()
+                } else {
+                    enableWebFallback("播放器错误: ${error.errorCodeName}")
+                }
+            }
+        })
+    }
+
+    private fun preparePlayer(url: String) {
+        val player = exoPlayer ?: return
+        val mediaSource = androidx.media3.exoplayer.hls.HlsMediaSource
+            .Factory(playerDataSourceFactory)
+            .createMediaSource(MediaItem.fromUri(url))
+        player.setMediaSource(mediaSource)
+        player.prepare()
+        player.playWhenReady = true
+    }
+
+    private fun loadNativeChannel(channelIndex: Int) {
+        nativeReady = false
+        currentChannel = channelIndex
+        EpgManager.ensureFresh(channelIndex, favorites)
+        loadingProgress.visibility = View.VISIBLE
+        splashLogo.visibility = View.VISIBLE
+
+        val url = YspPlaylistServer.playlistUrl(channelIndex)
+        Log.d("CCTV_NATIVE", "load channel $channelIndex -> $url")
+        preparePlayer(url)
+
+        handler.removeCallbacks(loadWatchdog)
+        handler.postDelayed(loadWatchdog, 25000)
+    }
+
+    private fun onNativeReady() {
+        if (!nativeReady) {
+            nativeReady = true
+            handler.removeCallbacks(loadWatchdog)
+            loadingProgress.visibility = View.GONE
+            splashLogo.visibility = View.GONE
+            hideSystemUI()
+            Log.d("CCTV_NATIVE", "channel $currentChannel ready")
+        }
+    }
+
+    private fun onNativeLoadStuck() {
+        if (!nativeMode || nativeReady) return
+        Log.w("CCTV_NATIVE", "load timeout for channel $currentChannel (retry=$nativeRetries)")
+        if (nativeRetries < 2) {
+            retryNative()
+        } else {
+            enableWebFallback("原生加载超时")
+        }
+    }
+
+    private fun retryNative() {
+        nativeRetries++
+        handler.postDelayed({
+            if (!nativeMode || nativeReady) return@postDelayed
+            preparePlayer(YspPlaylistServer.playlistUrl(currentChannel))
+            handler.removeCallbacks(loadWatchdog)
+            handler.postDelayed(loadWatchdog, 25000)
+        }, 1500)
+    }
+
+    /** 原生播放多次失败：回退到旧的 WebView 网页方案 */
+    private fun enableWebFallback(reason: String) {
+        if (!nativeMode) return
+        nativeMode = false
+        handler.removeCallbacks(loadWatchdog)
+        Log.e("CCTV_NATIVE", "fallback to WebView: $reason")
+        exoPlayer?.pause()
+        playerView.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+        loadWebChannel(currentChannel)
+    }
+
+    // ==================== WebView 兜底路径 ====================
+
     private fun setupWebView() {
         userAgent = CctvWebConfig.applySettings(webView)
 
@@ -155,6 +301,17 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
         }
 
         webView.webViewClient = CctvWebViewClient(userAgent, this)
+    }
+
+    private fun loadWebChannel(channelIndex: Int) {
+        videoPollController.resetForChannelChange()
+        currentChannel = channelIndex
+        EpgManager.ensureFresh(channelIndex, favorites)
+        loadingProgress.visibility = View.VISIBLE
+        val url = ChannelManager.getChannelUrl(channelIndex)
+        Log.d("CCTV_KEY", "Loading URL: $url")
+        webView.loadUrl(url)
+        loadingProgress.postDelayed({ loadingProgress.visibility = View.GONE }, 15000)
     }
 
     // ===== CctvWebViewClient.Listener =====
@@ -201,14 +358,12 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
     // ===== 频道切换 =====
 
     private fun loadChannel(channelIndex: Int) {
-        videoPollController.resetForChannelChange()
-        currentChannel = channelIndex
-        EpgManager.ensureFresh(channelIndex, favorites) // 换台时优先刷新该频道的节目单
-        loadingProgress.visibility = View.VISIBLE
-        val url = ChannelManager.getChannelUrl(channelIndex)
-        Log.d("CCTV_KEY", "Loading URL: $url")
-        webView.loadUrl(url)
-        loadingProgress.postDelayed({ loadingProgress.visibility = View.GONE }, 15000)
+        if (nativeMode) {
+            nativeRetries = 0
+            loadNativeChannel(channelIndex)
+        } else {
+            loadWebChannel(channelIndex)
+        }
     }
 
     private fun setupMenu() {
@@ -332,18 +487,23 @@ class MainActivity : AppCompatActivity(), CctvWebViewClient.Listener, VideoPollC
         super.onPause()
         webView.onPause()
         videoPollController.onPause()
+        exoPlayer?.pause()
     }
 
     override fun onResume() {
         super.onResume()
         webView.onResume()
         videoPollController.onResume()
+        if (nativeMode) exoPlayer?.play()
     }
 
     override fun onDestroy() {
         EpgManager.detach()
         videoPollController.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        YspPlaylistServer.stop()
+        exoPlayer?.release()
+        exoPlayer = null
         webView.stopLoading()
         webView.webChromeClient = null
         (webView.parent as? ViewGroup)?.removeView(webView)

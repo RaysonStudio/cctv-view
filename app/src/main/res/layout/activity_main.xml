@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.drawerlayout.widget.DrawerLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/drawerLayout"
     android:layout_width="match_parent"
@@ -13,13 +14,24 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent">
 
-        <!-- 腾讯 X5 WebView：单实例，撑满屏幕 -->
+        <!-- 原生播放器（Media3 ExoPlayer）：直连央视 CDN 明文 HLS，硬件解码零卡顿 -->
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/playerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#000000"
+            app:surface_type="surface_view"
+            app:use_controller="false"
+            app:resize_mode="fit" />
+
+        <!-- WebView 兜底播放（原生失败时回退网页方案） -->
         <com.tencent.smtt.sdk.WebView
             android:id="@+id/webView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent"
+            android:visibility="gone" />
 
-        <!-- 居中的加载层：盖在 WebView 上面 -->
+        <!-- 居中的加载层：盖在播放器上面 -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

@@ -4,6 +4,43 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [4.0] - 2026-10-17
+
+### 新增
+
+- **原生播放（不再依赖网页）**：逆向央视频直播链路，实现本地 HLS 代理 + Media3 ExoPlayer 原生播放
+  - `YspJceProtocol`：JCE 时移协议（TEA 加密 + gzip 打包，cmd 25312），向 `jacc.ysp.cctv.cn` 换取明文 m3u8（主取流协议）
+  - `YspCKeyProtocol`：cKey（TEA 加密 + base64url）+ `bkliveinfo.ysp.cctv.cn` 备用取流协议，死域名自动切换
+  - `YspPlaylistServer`：127.0.0.1 本地 HLS 代理，滑窗合成滚动直播列表，分片统一经代理转发（qqlive UA + Referer 规避 CDN 403）
+  - `YspChannelSidRefresher`：每 6 小时从 `page/PG00000004`（protobuf）自动刷新全频道 streamId 映射
+  - 零解密：央视 CDN 分片为明文 TS，系统硬件解码，彻底消除 JS/WASM 解密与网页渲染开销
+- 原生播放失败自动重试并回退 WebView 网页方案（X5 内核 + hls.js），任意环境保证有画面
+- 本地代理内置 `/test` 诊断端点（任意 URL 抓取 / JCE 连续取流对比）
+- 引入 Media3 ExoPlayer 1.4.1（exoplayer / exoplayer-hls / ui），最低系统版本上调至 Android 5.0 (API 21)
+
+### 变更
+
+- `MainActivity` 改为原生播放为主、WebView 兜底的双路径架构；遥控器按键、收藏夹、EPG 全部不变
+- `ChannelManager` 频道表增加 streamId（cnlid）字段，支持后台热更新
+- 布局替换为 `PlayerView`（WebView 隐藏保留作兜底）
+
+### 修复（实测验证）
+
+- 修复 bkliveinfo 播放列表**一次性令牌**问题：地址首次抓取 200、再次 403，代理改为每轮刷新重新请求 bkliveinfo 换新地址
+- 修复分片去重：部分 CDN 每次请求给同一分片加随机中间段，改为按分片尾部序号去重，消除窗口重复导致的 BEHIND_LIVE_WINDOW
+- 修复部分 CDN 对非网页客户端的 403：分片统一走本地代理，带 qqlive UA + Referer 头转发
+- 修复网页路径 HLS 补丁导致的卡顿（流畅优先配置，详见 v3.0 之后修复记录）
+- 修复直播列表播放卡顿：HLS 补丁改为「流畅优先」策略——起播落后直播边缘 3 片、卡顿后同步点自动后退 1 片（`liveSyncOnStallIncrease=1`）、落后超过分钟级才重同步（`liveMaxLatencyDurationCount=30`，正常观看绝不跳边）、缓冲空洞小幅前跳恢复（`nudgeOnVideoHole=true`），前向缓冲上限放宽至 90s
+- 锁定清晰度上限（默认 ≤1080p 最高码率档），避免 4K/8K 解码压力导致的卡顿；页面里设置 `window.__CCTV_CAP_HEIGHT=0` 可关闭封顶
+- 新增播放守护：每 5 秒检测播放冻结，分层自动恢复（`play()` → `v.load()` → 整页重载，每页面最多 2 次），覆盖网络抖动、WASM DRM 卡死与待机恢复场景
+- 播放建立后自动断开 DOM 清理 MutationObserver，减少播放期间主线程空转与 GC 压力
+- WebView 渲染优先级提升为 HIGH 并关闭缩放，降低视频播放掉帧
+- 主文档缓存文件名升级为 v3，旧缓存（含旧延迟补丁）自动失效
+
+### 已知问题
+
+- 部分走 bkliveinfo 的频道（CCTV-11/12/14/15/16/17/4K 等）在特定网络环境下，央视 CDN 会对代理请求返回 403（腾讯 CDN WAF 反爬），此类频道自动回退 WebView 网页方案播放
+
 ## [v3.0] - 2026-10-01
 
 ### 新增
@@ -74,6 +111,7 @@
 - 视频加载超时检测、JS 层重载与整页刷新重试机制
 - GitHub Actions 自动构建并发布 APK 的 CI 流程
 
+[4.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v4
 [v3.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v3.0
 [v2.1]: https://github.com/RaysonStudio/cctv-view/releases/tag/v2.1
 [v2.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v2.0

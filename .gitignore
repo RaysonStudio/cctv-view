@@ -36,3 +36,6 @@ google-services.json
 android_ca
 
 .kotlin/
+
+# 逆向研究过程文件（JS 抓取、协议验证脚本等）
+research/

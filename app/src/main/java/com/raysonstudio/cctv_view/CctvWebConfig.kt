@@ -32,8 +32,9 @@ import java.net.URL
  * 央视频 WebView 配置、URL 拦截策略与 CSS 注入工具集中在此。
  *
  * - [EARLY_CSS]：在 HTML <head> 中同步注入的全屏 CSS，从渲染管线源头隐藏非播放器元素
- * - [HLS_PATCH_JS]：在 HTML <head> 中注入的 Hls 延迟补丁，包装 window.Hls 强制覆盖
- *   播放器（hls.cmg.js）的直播同步配置，压低直播延迟并限制缓冲内存
+ * - [HLS_PATCH_JS]：在 HTML <head> 中注入的 Hls 流畅补丁，包装 window.Hls 强制覆盖
+ *   播放器（hls.cmg.js）的直播同步配置：加深缓冲垫、卡顿后自动后退同步点、不强制跳边，
+ *   并锁定清晰度上限，用「流畅优先」换取零卡顿（详见该常量注释）
  * - [TRUSTED_DOMAINS] / [VIDEO_EXTENSIONS] / [BLOCK_KEYWORDS]：拦截策略的放行/拦截清单
  * - [applySettings]：WebSettings 统一配置（桌面 Chrome UA、性能开关等）
  * - [interceptMainFrame]：同步抓取首页 HTML 并注入全屏 CSS 与 Hls 补丁
@@ -76,28 +77,25 @@ object CctvWebConfig {
     }
 
     /**
-     * 在 HTML <head> 中注入的 Hls 延迟补丁（同步脚本）。
+     * 在 HTML <head> 中注入的 Hls 流畅补丁（同步脚本）。
      *
      * 央视频 TV 页用 hls.js 定制版（hls.cmg.js，MSE + WASM DRM），页面代码 `new Hls()` 不传配置，
-     * 全部走内置默认：liveSyncDurationCount=3（起播落后直播边缘 3 个分片）、
-     * liveMaxLatencyDurationCount=Infinity（永不追回，卡顿累积到分钟级延迟）、
-     * liveSyncOnStallIncrease=1（每次卡顿同步点再后退 1 片）、
-     * backBufferLength=Infinity / maxMaxBufferLength=600（缓冲永不回收，电视盒子内存持续膨胀）。
+     * 全部走内置默认。旧版「低延迟补丁」把播放头压到直播边缘（liveSyncDurationCount=2、
+     * liveMaxLatencyDurationCount=3、liveSyncOnStallIncrease=0），网络/解密任何抖动都会
+     * 撞到缓冲末端形成「每次缓冲只播 1 帧」的循环，这正是卡顿的主因。
      *
-     * 这里包装 window.Hls 构造器，强制覆盖为低延迟 + 省内存配置：
-     * - liveSyncDurationCount=2：普通频道（分片约 9s）落后边缘 2 片 ≈ 18s。
-     *   小分片流（如 CCTV-8K 的分片仅 2s）在 MANIFEST_PARSED 后自适应改为 3 片 ≈ 6s
-     *   （直播窗口仅 6s，无法更深）。实测 1 片时播放头紧贴直播边缘、缓冲余量为零，
-     *   网络/解密任何抖动都会撞到缓冲末端形成"每次缓冲只播放 1 帧"的循环。
-     * - nudgeOnVideoHole=false：卡顿不再 nudge 前跳。实测 2s 分片的 8K 流上
-     *   nudge 每次前跳都会跳过 ~1-2s 画面（画面被跳开），且把播放头推向直播边缘
-     *   （棘轮效应：理论上落后 4s，实际只剩 0.8s，卡顿越来越频繁）。
-     *   关闭后卡顿变为短暂定格等待，分片到达后无缝续播、不丢内容。
-     * - liveMaxLatencyDurationCount=3（小分片流自适应 4）：落后过多（含待机恢复、
-     *   分片真正丢失）时一次性重同步回边缘，延迟封顶并自动收缩
-     * - liveSyncOnStallIncrease=0：卡顿恢复后同步点不后退，延迟不随卡顿累积
-     * - backBufferLength/liveBackBufferLength=30、maxMaxBufferLength=60：
-     *   及时回收旧缓冲（原值 Infinity/600，长时间播放内存持续膨胀）
+     * 这里包装 window.Hls 构造器，强制覆盖为「流畅优先」配置（牺牲一点直播延迟换零卡顿）：
+     * - liveSyncDurationCount=3：落后直播边缘 3 片（默认值），起播即有约 3 片缓冲垫
+     * - liveSyncOnStallIncrease=1：每次卡顿后同步点自动后退 1 片，打破「卡顿→恢复→又卡」循环
+     * - liveMaxLatencyDurationCount=30：只有落后超过 ~30 片（分钟级，如待机恢复）才一次性
+     *   重同步回边缘，正常观看中绝不跳边（跳边=画面跳变=卡顿）
+     * - nudgeOnVideoHole=true：缓冲空洞时小幅前跳恢复播放，而不是原地冻结；
+     *   小分片流（如 CCTV-8K 的 2s 分片）实测前跳会跳开画面并推向直播边缘，故单独关闭
+     * - backBufferLength/liveBackBufferLength=30：及时回收旧缓冲，防内存膨胀
+     * - maxBufferLength=90 / maxMaxBufferLength=120：前向缓冲上限放宽，网络抖动时有更大回旋空间
+     *
+     * 另在 MANIFEST_PARSED 后锁定清晰度：默认取 <=1080p 的最高码率档（4K/8K 解码压力是
+     * 电视盒子卡顿的另一主因），页面里设置 window.__CCTV_CAP_HEIGHT=0 可关闭封顶。
      *
      * 注入点在 </head> 之前（hls.cmg.js 脚本标签之后、页面实例化播放器之前），
      * 因此无论 hls.cmg.js 是否已执行都能包装成功：已加载则直接包装 window.Hls，
@@ -107,16 +105,22 @@ object CctvWebConfig {
         (function(){
             try{
                 var REAL_KEY='__cctvRealHls';
+                function capHeight(){
+                    try{ return (typeof window.__CCTV_CAP_HEIGHT==='number')?window.__CCTV_CAP_HEIGHT:1080; }
+                    catch(e){ return 1080; }
+                }
                 function mergeConfig(config){
                     config=config||{};
                     try{
-                        config.liveSyncDurationCount=2;
-                        config.liveMaxLatencyDurationCount=3;
-                        config.liveSyncOnStallIncrease=0;
-                        config.nudgeOnVideoHole=false;
+                        config.liveSyncDurationCount=3;
+                        config.liveMaxLatencyDurationCount=30;
+                        config.liveSyncOnStallIncrease=1;
+                        config.nudgeOnVideoHole=true;
+                        config.nudgeMaxRetry=3;
                         config.backBufferLength=30;
                         config.liveBackBufferLength=30;
-                        config.maxMaxBufferLength=60;
+                        config.maxBufferLength=90;
+                        config.maxMaxBufferLength=120;
                     }catch(e){}
                     return config;
                 }
@@ -132,13 +136,37 @@ object CctvWebConfig {
                                     RealHls.__cctvTdHooked=true;
                                     inst.on(EV.MANIFEST_PARSED,function(evt,data){
                                         try{
-                                            var lv=(data&&data.levels&&data.levels.length)?data.levels[0]:null;
-                                            var d=lv&&lv.details;
+                                            var levels=(data&&data.levels)?data.levels:[];
+                                            var lv0=levels[0]||null;
+                                            var d=lv0&&lv0.details;
                                             var td=d?d.targetduration:0;
                                             if(td>0&&td<=3&&inst.config){
+                                                // 小分片流（如 CCTV-8K，2s/片）：直播窗口约 6s，
+                                                // 3 片已是极限；nudge 前跳实测会跳开画面并推向直播边缘，关闭
                                                 inst.config.liveSyncDurationCount=3;
-                                                inst.config.liveMaxLatencyDurationCount=4;
-                                                console.log('[CCTV_JS] small-segment stream td='+td+' -> syncCount=3 maxLatency=4');
+                                                inst.config.nudgeOnVideoHole=false;
+                                                console.log('[CCTV_JS] small-segment stream td='+td+' -> syncCount=3 nudge=off');
+                                            }
+                                            // 清晰度封顶：锁定 <=cap 的最高码率档，避免 4K/8K 解码卡顿
+                                            var cap=capHeight();
+                                            if(cap>0){
+                                                var best=null, lowest=null;
+                                                for(var i=0;i<levels.length;i++){
+                                                    var h=levels[i].height||0;
+                                                    var br=levels[i].bitrate||0;
+                                                    if(h>0){
+                                                        if(!lowest||h<lowest.height) lowest={idx:i,height:h,bitrate:br};
+                                                        if(h<=cap&&(!best||h>best.height||(h===best.height&&br>best.bitrate))){
+                                                            best={idx:i,height:h,bitrate:br};
+                                                        }
+                                                    }
+                                                }
+                                                var pick=best||lowest;
+                                                if(pick){
+                                                    try{ inst.currentLevel=pick.idx; }catch(e){}
+                                                    try{ inst.autoLevelCapping=pick.idx; }catch(e){}
+                                                    console.log('[CCTV_JS] level locked '+pick.height+'p bitrate='+pick.bitrate+' idx='+pick.idx+' of '+levels.length+' (cap='+cap+'p)');
+                                                }
                                             }
                                         }catch(e){}
                                     });
@@ -207,9 +235,9 @@ object CctvWebConfig {
     private const val REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000L // 后台刷新最小间隔：5 分钟
     private const val HOME_URL = "https://www.yangshipin.cn/tv/home?pid=600001859"
     private const val CACHE_CHARSET = "utf-8"
-    // v2：加入 HLS_PATCH_JS 注入后更换文件名，使旧版本缓存失效，
-    // 保证升级后首次加载就能命中带延迟补丁的新 HTML（而不是旧的 30 分钟缓存）
-    private const val CACHE_FILE = "ysp_home_v2.html"
+    // v3：HLS 补丁改为「流畅优先」策略后更换文件名，使旧版本缓存失效，
+    // 保证升级后首次加载就能命中带新补丁的 HTML（而不是旧的 30 分钟内存/7 天磁盘缓存）
+    private const val CACHE_FILE = "ysp_home_v3.html"
     private const val DISK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000L // 磁盘缓存最长 7 天
 
     @Volatile private var cachedHtml: String? = null
@@ -296,6 +324,12 @@ object CctvWebConfig {
         settings.allowContentAccess = false
 
         // ===== 性能优化 =====
+        // 渲染优先级 HIGH：电视盒子 GPU 合成优先，减少视频播放时的掉帧
+        settings.setRenderPriority(WebSettings.RenderPriority.HIGH)
+        // 关闭缩放：TV 遥控器无缩放需求，避免页面重排/缩放合成开销
+        settings.setSupportZoom(false)
+        settings.setBuiltInZoomControls(false)
+        settings.setDisplayZoomControls(false)
         // 注意：不再启用 offscreenPreRaster——双缓冲下后台 WebView 离屏预渲染
         // 会触发 "tile memory limits exceeded"，抢 GPU 显存导致前台掉帧/卡顿
         // 视口设置：确保 100% 尺寸正确映射到 WebView 像素
@@ -305,8 +339,8 @@ object CctvWebConfig {
         settings.javaScriptCanOpenWindowsAutomatically = false
         settings.setSupportMultipleWindows(false)
         settings.setGeolocationEnabled(false)
-        // 启用 WebView 调试（可通过 chrome://inspect 查看 console 日志）
-        WebView.setWebContentsDebuggingEnabled(true)
+        // WebView 调试仅限 debug 构建（可通过 chrome://inspect 查看 console 日志）
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
         return userAgent
     }
@@ -537,6 +571,7 @@ object CctvWebConfig {
                 window.__cctvStuckStart=null;
                 window.__cctvVideoError=null;
                 window.__cctvStartTs=Date.now();
+                window.__cctvReloadCount=0;
                 // 兜底：若同步 HTML 注入未生效，则通过 JS 补充 CSS
                 var hasStyle=!!document.getElementById('cctv-early-css');
                 console.log('[CCTV_JS] earlyCss exists='+hasStyle);
@@ -565,7 +600,13 @@ object CctvWebConfig {
                     // 且全屏外观已由同步注入的 CSS 保证，重复清理纯属浪费 CPU/内存。
                     var v=document.querySelector('video.video-js');
                     var playing=!!(v&&!v.paused&&v.readyState>=2);
-                    if(playing&&window.__cctvCleanedOnce){ window.__cctvCleaning=false; return; }
+                    if(playing&&window.__cctvCleanedOnce){
+                        // 播放已建立：断开清理用 MutationObserver 并取消挂起定时器，
+                        // 播放期间不再订阅 SPA 高频 DOM 变更，释放主线程（防卡顿）
+                        try{ if(window.cctvObserver){ window.cctvObserver.disconnect(); window.cctvObserver=null; } }catch(e){}
+                        try{ if(window.__cctvCleanTimer){ clearTimeout(window.__cctvCleanTimer); window.__cctvCleanTimer=null; } }catch(e){}
+                        window.__cctvCleaning=false; return;
+                    }
                     var totalRemoved=0;
                     var totalHidden=0;
                     try{
@@ -744,9 +785,85 @@ object CctvWebConfig {
                             v.addEventListener('abort',function(){
                                 console.warn('CCTV_VIDEO_ABORT');
                             },true);
+                            // 绑定完成即断开：本页面内 video 元素不会重建（换台=整页重载），
+                            // 避免观察器继续订阅 SPA 高频 DOM 变更
+                            try{ window.__cctvErrorObserver.disconnect(); window.__cctvErrorObserver=null; }catch(e){}
                         }
                     });
                     window.__cctvErrorObserver.observe(document.documentElement,{childList:true,subtree:true});
+                }
+
+                // ===== 播放守护（零卡顿安全网）：冻结检测 + 分层自动恢复 =====
+                // 每 5 秒检查一次播放是否冻结（currentTime 不再前进 / 视频错误）：
+                //   已播过(hasPlayed)        未播过(启动阶段)
+                //   15s 冻结 -> v.play()      25s 冻结 -> v.play()
+                //   30s 冻结 -> v.load()      55s 冻结 -> v.load()（给 WASM DRM 初始化留足时间）
+                //   45s 冻结 -> 整页 reload   80s 冻结 -> 整页 reload
+                // v.error（解码/流错误）走快车道：2s play -> 10s load -> 20s reload
+                // 整页 reload 每页面最多 2 次，避免无限重载循环。
+                window.__cctvLastCt=null;
+                window.__cctvFrozenSince=0;
+                window.__cctvRecoverStage=0;
+                window.__cctvHasPlayed=false;
+                if(!window.__cctvWatchdog){
+                    window.__cctvWatchdog=setInterval(function(){
+                        try{
+                            var v=document.querySelector('video.video-js');
+                            if(!v) return;
+                            var now=Date.now();
+                            if(v.currentTime>0||v.readyState>=3){ window.__cctvHasPlayed=true; }
+                            var frozen;
+                            if(v.error){
+                                frozen=true; // 错误视为冻结，走快车道
+                            }else if(v.paused){
+                                frozen=false; // 用户/系统暂停不干预
+                            }else{
+                                frozen=(v.currentTime===window.__cctvLastCt);
+                            }
+                            window.__cctvLastCt=v.currentTime;
+                            if(!frozen){
+                                window.__cctvFrozenSince=0;
+                                window.__cctvRecoverStage=0;
+                                return;
+                            }
+                            if(!window.__cctvFrozenSince) window.__cctvFrozenSince=now;
+                            var ms=now-window.__cctvFrozenSince;
+                            var stage=window.__cctvRecoverStage;
+                            var hp=window.__cctvHasPlayed;
+                            var t1=hp?15000:25000;
+                            var t2=hp?30000:55000;
+                            var t3=hp?45000:80000;
+                            if(v.error){ t1=2000; t2=10000; t3=20000; }
+                            if(stage===0&&ms>t1){
+                                window.__cctvRecoverStage=1;
+                                console.warn('[CCTV_JS] watchdog: frozen '+Math.round(ms/1000)+'s -> play()');
+                                try{ v.play(); }catch(e){}
+                            }else if(stage===1&&ms>t2){
+                                window.__cctvRecoverStage=2;
+                                console.warn('[CCTV_JS] watchdog: frozen '+Math.round(ms/1000)+'s -> video reload (v.load)');
+                                try{ v.pause(); }catch(e){}
+                                try{ v.load(); }catch(e){}
+                                setTimeout(function(){
+                                    try{
+                                        var pb=document.querySelector('.play.play2');
+                                        if(pb){ pb.click(); }
+                                        var v2=document.querySelector('video.video-js');
+                                        if(v2){ v2.play(); }
+                                    }catch(e){}
+                                },500);
+                            }else if(stage===2&&ms>t3){
+                                window.__cctvRecoverStage=3;
+                                var rc=(window.__cctvReloadCount||0);
+                                if(rc<2){
+                                    window.__cctvReloadCount=rc+1;
+                                    console.warn('[CCTV_JS] watchdog: frozen '+Math.round(ms/1000)+'s -> location.reload() #'+(rc+1));
+                                    try{ location.reload(); }catch(e){}
+                                }else{
+                                    console.error('[CCTV_JS] watchdog: reload budget exhausted, giving up');
+                                }
+                            }
+                        }catch(e){}
+                    },5000);
                 }
             })();
         """.trimIndent()
