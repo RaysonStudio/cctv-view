@@ -111,7 +111,7 @@
 - 视频加载超时检测、JS 层重载与整页刷新重试机制
 - GitHub Actions 自动构建并发布 APK 的 CI 流程
 
-[4.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v4
+[4.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v4.0
 [v3.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v3.0
 [v2.1]: https://github.com/RaysonStudio/cctv-view/releases/tag/v2.1
 [v2.0]: https://github.com/RaysonStudio/cctv-view/releases/tag/v2.0
