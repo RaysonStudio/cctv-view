@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="央视网 TV">
+  <defs>
+    <linearGradient id="g" x1="8" y1="4" x2="56" y2="62" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff4d5e"/>
+      <stop offset="1" stop-color="#c00020"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/>
+  <path d="M27 20.5v23L46 32 27 20.5z" fill="#fff"/>
+  <path d="M17 23.5a14 14 0 0 0 0 17" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="3.4" stroke-linecap="round"/>
+</svg>

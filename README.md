@@ -6,6 +6,9 @@
 
 在电视上轻松收看央视与卫视直播的 Android TV 应用。
 
+> **项目官网**：<https://raysonstudio.github.io/cctv-view/>（下载、功能演示与安装指引）
+
+[![Website](https://img.shields.io/badge/website-raysonstudio.github.io%2Fcctv--view-ff3d51?logo=googlechrome&logoColor=white)](https://raysonstudio.github.io/cctv-view/)
 [![Release](https://img.shields.io/github/v/release/RaysonStudio/cctv-view?logo=github&color=blue)](https://github.com/RaysonStudio/cctv-view/releases)
 [![Platform](https://img.shields.io/badge/platform-Android%20TV-brightgreen)](https://developer.android.com/tv)
 [![Android](https://img.shields.io/badge/Android-5.0%2B-green)](https://developer.android.com/about/versions/android-5.0)
